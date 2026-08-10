@@ -164,6 +164,58 @@ function Actors.IsHumanoidClass(className)
     return className:find("^CH_NPC_") ~= nil or className:find("^CH_P_") ~= nil
 end
 
+--- Cached per actor. The answer cannot change while an actor lives, and the
+--- check was previously being redone for every character on every tick.
+local humanoidCache = setmetatable({}, { __mode = "k" })
+
+--- A humanoid rig is large. Eve's skeleton has 182 bones, measured. A drone or
+--- a prop has a handful. That single number separates them, and unlike a name
+--- it cannot go out of date.
+local MIN_HUMANOID_BONES = 30
+
+--- Does this actor have a human skeleton?
+---
+--- The class-name rule is not enough, and the game says so. CH_NPC_05_Var01
+--- passes it and is N_InitDrone: the whole CH_NPC_05 family is drones,
+--- N_TumblerDrone, N_DataDrone, N_Digger and friends, all filed under NPC.
+--- A name-based filter needs a blacklist that grows forever.
+---
+--- Asking the skeleton is the real test, and it cannot go stale: a character
+--- with a head and hands is a person, whatever its class is called.
+---
+--- Bone count alone, deliberately.
+---
+--- An earlier version also probed for named bones with GetBoneIndex, building
+--- an FName and calling into the mesh eight times per character per tick. That
+--- crashed the game while a save was loading, when meshes are still streaming
+--- and are not ready to answer. One integer read is enough to tell a person
+--- from a drone, and it costs a fraction as much.
+---
+--- The mesh must have its SkeletalMesh before anything is asked of it. Without
+--- that check the component exists but has nothing behind it, which is exactly
+--- the state it is in mid-stream.
+function Actors.IsHumanoidActor(actor)
+    if not IsLive(actor) then return false end
+
+    local cached = humanoidCache[actor]
+    if cached ~= nil then return cached end
+
+    local mesh = Try(function() return actor:GetSBSkeletalMeshComponent(0) end)
+    if not IsLive(mesh) then return false end
+
+    -- Not cached: a mesh still streaming will have one shortly, and caching
+    -- "no" now would make that permanent.
+    local skeletal = Try(function() return mesh.SkeletalMesh end)
+    if not IsLive(skeletal) then return false end
+
+    local bones = Try(function() return mesh:GetNumBones() end)
+    if type(bones) ~= "number" then return false end
+
+    local humanoid = bones >= MIN_HUMANOID_BONES
+    humanoidCache[actor] = humanoid
+    return humanoid
+end
+
 --- Humanoid characters near the player, nearest first.
 ---
 --- FindAllOf on the C++ base class returns every derived instance, so this sees
@@ -198,7 +250,11 @@ function Actors.NearbyCharacters(maxDistance, opts)
             if type(distance) == "number" and distance <= maxDistance then
                 local class = Try(function()
                     return candidate:GetClass():GetFName():ToString() end)
+                -- Class name first because it is free, then the skeleton,
+                -- which is what actually decides. A drone passes the name test
+                -- and fails the skeleton test, which is the whole point.
                 local humanoid = Actors.IsHumanoidClass(class)
+                    and Actors.IsHumanoidActor(candidate)
                 if humanoid or opts.includeCreatures then
                     found[#found + 1] = {
                         actor    = candidate,

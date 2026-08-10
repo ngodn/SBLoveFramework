@@ -147,6 +147,7 @@ local Partner  = nil
 local PartnerActor = nil
 local Pending      = nil     -- an in-flight summon, collected on later ticks
 local LastBucket   = -1      -- distance bucket, so the search log only moves
+local ReportedCensus = false
 
 local function ReportCast()
     Out("")
@@ -352,6 +353,25 @@ local function Tick()
             -- in a linear story area with no map and no fast travel, where the
             -- only way to reach anyone is to find them on foot.
             local wide = Actors.NearbyCharacters(SEARCH_RANGE)
+
+            -- Also list everything rejected, once, so an empty result can be
+            -- told apart from a filter that is throwing people away.
+            if false then   -- census disabled: it scanned every
+                            -- character including creatures on a
+                            -- loop, which is what crashed a load
+                ReportedCensus = true
+                local everything = Actors.NearbyCharacters(SEARCH_RANGE,
+                    { includeCreatures = true })
+                Out("")
+                Out(string.format("census: %d character(s) within %.0f m",
+                    #everything, SEARCH_RANGE / 100))
+                for index, entry in ipairs(everything) do
+                    if index > 12 then break end
+                    Out(string.format("  %-40s %5.0f m  %s", entry.class,
+                        entry.distance / 100,
+                        entry.humanoid and "HUMANOID" or "not humanoid"))
+                end
+            end
 
             if #wide > 0 and wide[1].distance <= PARTNER_RANGE then
                 Partner, PartnerActor = wide[1].class, wide[1].actor

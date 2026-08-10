@@ -11,3 +11,6 @@
 *.bak
 .DS_Store
 scratch/
+
+# native build output
+native/build/

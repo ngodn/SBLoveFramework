@@ -156,15 +156,48 @@ local function TimeDilation()
     return type(value) == "number" and value or nil
 end
 
+local GameplayStaticsCache = nil
+local function GameplayStatics()
+    if IsLive(GameplayStaticsCache) then return GameplayStaticsCache end
+    GameplayStaticsCache = Try(StaticFindObject,
+        "/Script/Engine.Default__GameplayStatics")
+    return IsLive(GameplayStaticsCache) and GameplayStaticsCache or nil
+end
+
 --- Game seconds, which slow down under slomo while our real-time timer does
 --- not. This is the measurement that cannot be faked by an ignored write.
+---
+--- UWorld::GetTimeSeconds is a plain C++ method with no UFunction behind it, so
+--- it is not callable through reflection. The first attempt used it, got nil
+--- every tick, and the probe waited forever for a number that could not arrive.
+--- Both routes below are BlueprintCallable and therefore actually reachable.
+local GameSecondsRoute = nil
+
 local function GameSeconds()
     local controller = Controller()
-    if not controller then return nil end
+    if not controller then return nil, "no controller" end
     local world = Try(function() return controller:GetWorld() end)
-    if not IsLive(world) then return nil end
-    local value = Try(function() return world:GetTimeSeconds() end)
-    return type(value) == "number" and value or nil
+    if not IsLive(world) then return nil, "no world" end
+
+    local kismet = Kismet()
+    if kismet then
+        local value = Try(function() return kismet:GetGameTimeInSeconds(world) end)
+        if type(value) == "number" then
+            GameSecondsRoute = "KismetSystemLibrary.GetGameTimeInSeconds"
+            return value
+        end
+    end
+
+    local statics = GameplayStatics()
+    if statics then
+        local value = Try(function() return statics:GetTimeSeconds(world) end)
+        if type(value) == "number" then
+            GameSecondsRoute = "GameplayStatics.GetTimeSeconds"
+            return value
+        end
+    end
+
+    return nil, "neither GetGameTimeInSeconds nor GetTimeSeconds returned a number"
 end
 
 local function CheatManager()
@@ -206,14 +239,36 @@ end
 -- ------------------------------------------------------------------- steps
 
 --- Sample game time across ticks so its rate can be compared before and after.
-local Samples = {}
+--- Returns the rate, or nil while still collecting.
+local Samples      = {}
+local RateUsable   = nil   -- nil = undecided, false = fall back to TimeDilation
+local SAMPLE_LIMIT = 6     -- ticks to wait before declaring the rate unusable
+
 local function SampleRate()
-    local now = GameSeconds()
-    if now == nil then return nil end
+    local now, why = GameSeconds()
+    if now == nil then
+        if RateUsable == nil and #Samples == 0 then Samples.why = why end
+        return nil
+    end
     Samples[#Samples + 1] = now
     if #Samples < 3 then return nil end
     local span = Samples[#Samples] - Samples[#Samples - 2]
     return span / 2.0   -- game seconds per real second, at POLL_MS = 1000
+end
+
+--- Did the world slow down? Prefers the rate, falls back to TimeDilation when
+--- game time could not be read at all. Returns changed, description.
+local function SlowedDown(rate, dilation)
+    if rate and Baseline.rate and Baseline.rate > 0 then
+        return rate < Baseline.rate * 0.75,
+               string.format("rate %.2f -> %.2f", Baseline.rate, rate)
+    end
+    if type(dilation) == "number" and type(Baseline.dilation) == "number" then
+        return math.abs(dilation - Baseline.dilation) > 0.01,
+               string.format("TimeDilation %.2f -> %.2f",
+                   Baseline.dilation, dilation)
+    end
+    return false, "no usable measurement"
 end
 
 local function StepWait()
@@ -236,11 +291,28 @@ end
 
 local function StepRateBefore()
     local rate = SampleRate()
-    if rate == nil then return end
-    Baseline.rate     = rate
+
+    -- Never wait forever for a number that may never come. The first attempt
+    -- did exactly that and produced a log that simply stopped mid-sentence.
+    if rate == nil then
+        if Ticks < SAMPLE_LIMIT then return end
+        RateUsable = false
+        Out("  could not read game time: " .. tostring(Samples.why))
+        Out("  falling back to TimeDilation alone, which is the weaker check")
+    else
+        RateUsable    = true
+        Baseline.rate = rate
+        Out(string.format("  normal rate: %.2f game seconds per real second "
+            .. "(via %s)", rate, tostring(GameSecondsRoute)))
+    end
+
     Baseline.dilation = TimeDilation()
-    Out(string.format("  normal rate: %.2f game seconds per real second", rate))
     Out(string.format("  TimeDilation reads: %s", tostring(Baseline.dilation)))
+    if RateUsable == false and Baseline.dilation == nil then
+        Abort("neither game time nor TimeDilation can be read, so there is no "
+            .. "way to tell whether a console command did anything")
+        return
+    end
     Out("")
     Out("  route A: KismetSystemLibrary.ExecuteConsoleCommand(\"slomo 0.5\")")
     local ok, err = ConsoleViaKismet("slomo 0.5")
@@ -251,12 +323,12 @@ end
 
 local function StepRateKismet()
     local rate = SampleRate()
-    if rate == nil then return end
+    if rate == nil and RateUsable and Ticks < SAMPLE_LIMIT then return end
     local dilation = TimeDilation()
-    Out(string.format("     rate now %.2f (was %.2f), TimeDilation %s",
-        rate, Baseline.rate, tostring(dilation)))
+    local changed, how = SlowedDown(rate, dilation)
+    Out("     " .. how)
 
-    if Baseline.rate > 0 and rate < Baseline.rate * 0.75 then
+    if changed then
         Console, RouteName = ConsoleViaKismet, "kismet"
         Record("console route", "WORKED", "Kismet route moves the game")
         ConsoleViaKismet("slomo 1.0")
@@ -294,12 +366,13 @@ end
 
 local function StepRateController()
     local rate = SampleRate()
-    if rate == nil then return end
-    Out(string.format("     rate now %.2f (was %.2f)", rate, Baseline.rate))
+    if rate == nil and RateUsable and Ticks < SAMPLE_LIMIT then return end
+    local changed, how = SlowedDown(rate, TimeDilation())
+    Out("     " .. how)
     ConsoleViaController("slomo 1.0")
     ConsoleViaKismet("slomo 1.0")
 
-    if Baseline.rate > 0 and rate < Baseline.rate * 0.75 then
+    if changed then
         Console, RouteName = ConsoleViaController, "controller"
         Record("console route", "WORKED", "controller route moves the game")
         Out("")

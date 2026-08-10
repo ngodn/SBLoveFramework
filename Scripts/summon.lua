@@ -328,6 +328,29 @@ function Summon.SpawnClass(assetPath, offset, allow)
 
     summoned[#summoned + 1] = { actor = spawned, alias = assetPath }
 
+    -- A raw spawn produces an empty shell: the actor exists with no body mesh,
+    -- because Stellar Blade assigns meshes through its own initialisation
+    -- rather than from the Blueprint alone. ASBCharacter exposes that path as
+    -- Blueprint events, and the useful ones take no arguments, so they are
+    -- cheap and safe to invoke.
+    --
+    -- Ordered least to most disruptive, and stopped as soon as a mesh appears,
+    -- so a character that only needed InitActor is not then re-initialised.
+    for _, step in ipairs({ "NotifyBP_InitActor", "NotifyBP_ReInitActor" }) do
+        local mesh = Try(function()
+            return spawned:GetSBSkeletalMeshComponent(0) end)
+        local skeletal = IsLive(mesh)
+            and Try(function() return mesh.SkeletalMesh end) or nil
+        if IsLive(skeletal) then break end
+        Try(function() spawned[step](spawned) end)
+    end
+
+    -- Then ask for the body mesh slot specifically, if it is still bare.
+    local mesh = Try(function() return spawned:GetSBSkeletalMeshComponent(0) end)
+    if IsLive(mesh) and not IsLive(Try(function() return mesh.SkeletalMesh end)) then
+        Try(function() spawned:NotifyBP_SetMesh(0) end)   -- ESBMesh_Body
+    end
+
     -- Now move it clear of the player, in the player's frame, using the
     -- placement path that is already proven.
     local origin = Actors.GetLocation(player)
@@ -355,7 +378,11 @@ function Summon.Inspect(actor)
     if not IsLive(actor) then return false, "actor is not valid" end
 
     local mesh = Try(function() return actor:GetSBSkeletalMeshComponent(0) end)
-    if not IsLive(mesh) then return false, "no body mesh" end
+    if not IsLive(mesh) then
+        -- Distinguish "no component at all" from "component with nothing in
+        -- it". They need different fixes and previously read the same.
+        return false, "no body mesh component"
+    end
 
     local skeletal = Try(function() return mesh.SkeletalMesh end)
     if not IsLive(skeletal) then return false, "mesh component has no skeletal mesh" end

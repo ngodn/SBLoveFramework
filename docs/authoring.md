@@ -210,3 +210,44 @@ A shipped animation can now be taken apart completely, with no engine, from
 asset header down to per-track key formats. What remains for authoring is the
 write side: decode the individual keys for a chosen track, substitute new
 values, re-encode, and repack.
+
+## The size model is complete: 17/17 animations, every track exact
+
+Each track's data must end exactly where the next track's begins. That is a
+whole-file consistency check the data itself provides, and it is unforgiving: a
+single wrong rule shows up immediately.
+
+```
+Proto_Walk and 16 siblings   374/374, 572/572, 571/571 ...
+exact: 17    mismatched: 0
+```
+
+Per track, from `GetAllSizesFromFormat` (AnimationCompression.h:741) with
+`CompressedRotationStrides` and `PerTrackNumComponentTable` (AnimEncoding.cpp:42
+and :69):
+
+```
+size  = 4                                  packed header
+      + fixedBytes                         IntervalFixed32NoW only: min/range pairs
+      + bytesPerKey * numKeys
+pad to 4
+      + numKeys * (numFrames > 255 ? 2 : 1)   if FormatFlags & 0x08
+pad to 4
+```
+
+Three rules came only from the data disagreeing, not from reading the source:
+
+- **Scale tracks share the key stream.** `ScaleOffsets.OffsetData` addresses the
+  same buffer as the translation and rotation offsets. Ignoring them made every
+  track preceding a scale track look undersized: 104/374.
+- **Keys are padded before the time table**, not only at the end. Without the
+  inner alignment, two tracks came out exactly 4 bytes short: 372/374.
+- **The time table is 2 bytes per entry above 255 frames.** Only
+  `Proto_Walk_END_R`, at 281 frames, exposed this: 264/374 on that file alone.
+
+Each was found by a check that reported which track failed and by how much,
+rather than by a parser that accepted whatever it read.
+
+`ACF_Float96NoW` is three uncompressed 32-bit floats per key. Authoring a track
+in that format needs no quantisation at all, which is the natural choice for a
+hand-built pose.

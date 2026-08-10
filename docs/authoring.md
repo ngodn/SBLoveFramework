@@ -301,3 +301,51 @@ What remains for a real pose:
    rewrite the track as `ACF_Float96NoW` and adjust its header and the offsets
    that follow.
 3. **Pack and load.** `retoc to-zen`, then confirm the game loads it.
+
+## Track to bone mapping
+
+`CompressedTrackToSkeletonMapTable` holds a bone tree index per track;
+the names come from the skeleton asset's reference skeleton, which lives in its
+own unparsed trailing block.
+
+```
+track  3 -> bone  3  Bip001-Spine
+track  4 -> bone  4  Bip001-Spine1
+track  5 -> bone  5  Bip001-Spine2
+track  7 -> bone  7  Bip001-L-Clavicle
+track  8 -> bone  8  Bip001-L-UpperArm
+track  9 -> bone  9  Bip001-L-Forearm
+track 10 -> bone 10  Bip001-L-Hand
+track 47 -> bone 53  Bip001-R-Clavicle
+track 48 -> bone 54  Bip001-R-UpperArm
+track 49 -> bone 55  Bip001-R-Forearm
+track 50 -> bone 56  Bip001-R-Hand
+```
+
+The array begins at offset `0x4` with `[0]=Root, [1]=Bip001`, which is how a
+Biped reference skeleton is ordered.
+
+### Finding it needed content matching, not a count
+
+Reading an int32 at the head and believing it gave 3267 bones when the mesh has
+182. The names it produced were correct anyway, which is the tell: the entries
+begin there and the supposed count was just the first name index.
+
+Requiring the root's parent to be exactly `-1` then rejected the real array, so
+that assumption was wrong too.
+
+What works is sliding a 12-byte stride and demanding a long run where every
+entry resolves to a name and every parent precedes its child, then checking the
+run contains anchors already verified in the live game: `Bip001-L-Hand`,
+`Bip001-R-Hand`, `Bip001-Spine`.
+
+The run length is still not trustworthy: it hits the 2048 cap because garbage
+after the skeleton keeps resolving. That does not matter for lookup, since only
+the first ~90 indices are ever referenced, but the count should not be quoted as
+the bone count.
+
+The mapping itself is corroborated independently: the live game reported
+`[7] Bip001-L-Clavicle, [8] L-UpperArm, [9] L-Forearm, [10] L-Hand`, and the
+skeleton agrees exactly. The right arm sits one higher here (53-56 against the
+mesh's 52-55) because the mesh and skeleton orders differ slightly; the track
+map indexes the skeleton, so these are the correct numbers to write against.

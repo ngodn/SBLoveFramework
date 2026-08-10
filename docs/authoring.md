@@ -107,3 +107,57 @@ data, so the payload is one animation's worth of quantised keys rather than
 anything exotic.
 
 Skeleton to author against: `CH_P_EVE_01_Skeleton`.
+
+## Decoded: the format is fully readable without the engine
+
+`tools/SBAnimTool` reads a shipped Stellar Blade `AnimSequence` end to end.
+UAssetAPI handles the UObject property list; everything after it is the block
+written by `FCompressedAnimSequence::SerializeCompressedData`, reimplemented
+from the 4.26 source.
+
+`Proto_Walk`, from the shipped paks:
+
+```
+CompressedRawDataSize        88320
+tracks                       138
+CompressedCurveNames         0
+bUseBulkDataForLoad          0
+CompressedByteStream         37308 bytes
+BoneCodecDDCHandle           AnimCompress_PerTrackCompression_6
+CompressedNumberOfFrames     37
+KeyEncodingFormat            2  (AKF_PerTrackCompression)
+```
+
+### Layout, as measured rather than assumed
+
+The compressed block starts **22 bytes** into UAssetAPI's trailing data:
+
+```
+16 bytes   skeleton GUID          not shown by UAnimSequence::Serialize
+ 2 bytes   FStripDataFlags
+ 4 bytes   bSerializeCompressedData
+```
+
+Two things the source alone would have got wrong, both found by hexdump:
+
+- The 16-byte GUID is not visible in `UAnimSequence::Serialize`.
+- `bUseBulkDataForLoad` costs **4** bytes, not 1. UE serialises `bool` through
+  `FArchive` as `int32`. The same applies to `bSerializeCompressedData`.
+
+The parser rejects every offset whose values fail a sanity check and reports
+which it rejected, so a wrong guess cannot masquerade as a successful parse.
+Offsets 0, 2 and 6 were all rejected before 22 succeeded.
+
+### What this means for authoring
+
+The codec is `AnimCompress_PerTrackCompression` with `AKF_PerTrackCompression`,
+and 4.26 describes it completely in
+`Engine/Source/Runtime/Engine/Public/AnimEncoding_PerTrackCompression.h` and
+its `.cpp`. Per-track compression stores a format per track inside the byte
+stream, which is why the three global format fields read `ACF_Identity`.
+
+138 tracks across 37 frames in 37308 bytes is roughly 7 bytes per track per
+frame, consistent with quantised keys rather than raw floats.
+
+Reading is solved. Writing is the next step: decode the per-track offsets and
+key data, replace the tracks for the arm chain, and re-encode.

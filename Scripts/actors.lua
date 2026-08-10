@@ -143,6 +143,49 @@ function Actors.Resolve(name)
     return best
 end
 
+--- Any SBCharacter near the player, whatever it is.
+---
+--- The named registry above only knows the characters worth naming, and those
+--- are not loaded everywhere: Adam and Lily live in Xion and story areas, and
+--- Raven only exists during her encounter. In a dungeon there may be nobody
+--- named at all, which blocks testing anything that needs two actors.
+---
+--- FindAllOf on the C++ base class returns every derived instance, so this
+--- finds enemies and incidental NPCs too. They make perfectly good test
+--- partners: what matters for pairing is an actor with an anim instance and a
+--- live BlendSpace, not who the character is.
+---
+--- Returns nearest first. The player is excluded.
+function Actors.NearbyCharacters(maxDistance)
+    maxDistance = maxDistance or 3000.0
+
+    local player = Actors.GetPlayerPawn()
+    if not IsLive(player) then return {} end
+
+    local all = Try(FindAllOf, "SBCharacter")
+    if not all then return {} end
+
+    local found = {}
+    for _, candidate in ipairs(all) do
+        if IsLive(candidate) and candidate ~= player then
+            local distance = Try(function()
+                return player:GetDistanceTo(candidate) end)
+            if type(distance) == "number" and distance <= maxDistance then
+                local class = Try(function()
+                    return candidate:GetClass():GetFName():ToString() end)
+                found[#found + 1] = {
+                    actor    = candidate,
+                    distance = distance,
+                    class    = class or "?",
+                }
+            end
+        end
+    end
+
+    table.sort(found, function(a, b) return a.distance < b.distance end)
+    return found
+end
+
 --- Every character currently resolvable, for a UI list.
 function Actors.Present()
     local found = {}

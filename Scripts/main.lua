@@ -118,6 +118,8 @@ local Level    = 0
 local LastWait = nil
 local Partner  = nil
 
+local PartnerActor = nil
+
 local function ReportCast()
     Out("")
     Out("################ WHO IS HERE ################")
@@ -129,9 +131,31 @@ local function ReportCast()
         if actor then
             Out(string.format("  %-8s PRESENT  %s", name,
                 FullName(actor):match("([^%.]+)$") or "?"))
-            if name ~= "Eve" and not Partner then Partner = name end
+            if name ~= "Eve" and not Partner then
+                Partner, PartnerActor = name, actor
+            end
         else
             Out(string.format("  %-8s -        %s", name, tostring(why)))
+        end
+    end
+
+    -- The named characters are not loaded everywhere, and waiting to reach a
+    -- populated area to test pairing at all is a poor trade. Any SBCharacter
+    -- with an anim instance works as a partner: what pairing needs is a second
+    -- actor, not a particular one.
+    if not Partner then
+        local nearby = Actors.NearbyCharacters(3000.0)
+        Out("")
+        Out(string.format("  no named partner; %d other character%s nearby",
+            #nearby, #nearby == 1 and "" or "s"))
+        for index, entry in ipairs(nearby) do
+            if index > 6 then break end
+            Out(string.format("    %6.0f cm  %s", entry.distance, entry.class))
+        end
+        if #nearby > 0 then
+            Partner      = nearby[1].class
+            PartnerActor = nearby[1].actor
+            Out("  using the nearest as the test partner: " .. Partner)
         end
     end
 end
@@ -161,11 +185,8 @@ local function StartScene()
     local eve = Actors.Resolve("Eve")
     if not eve then Out("  Eve not resolvable") return false end
 
-    local definition, partnerActor = SOLO, nil
-    if Partner then
-        partnerActor = Actors.Resolve(Partner)
-        if partnerActor then definition = PairedScene(Partner) end
-    end
+    local definition, partnerActor = SOLO, PartnerActor
+    if partnerActor then definition = PairedScene(Partner) end
 
     Out("")
     Out("################ SCENE ################")
@@ -228,7 +249,7 @@ local function Tick()
             Scene.Stop()
             Out("  scene stopped (left gameplay), everything restored")
         end
-        Stage, Ticks, Level, Partner = "wait", 0, 0, nil
+        Stage, Ticks, Level, Partner, PartnerActor = "wait", 0, 0, nil, nil
         return
     end
 

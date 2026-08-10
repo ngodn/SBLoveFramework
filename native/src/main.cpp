@@ -148,6 +148,59 @@ namespace
         return true;
     }
 
+    /* Build an absolute path to a file in the ue4ss folder, which is four
+     * directories up from <mod>\dlls\main.dll. Never relative: assuming the
+     * working directory is what silently broke milestone 1's logging. */
+    bool Ue4ssPath(const wchar_t* leaf, wchar_t* out, size_t count)
+    {
+        if (!GetModuleFileNameW(g_self, out, static_cast<DWORD>(count))) return false;
+        for (int stripped = 0; stripped < 4; ++stripped)
+        {
+            wchar_t* slash = wcsrchr(out, L'\\');
+            if (!slash) return false;
+            *slash = L'\0';
+        }
+        return wcscat_s(out, count, leaf) == 0;
+    }
+
+    /* The Lua side finds Eve's anim instance and writes its address here. Lua
+     * can find the object; only native code can order a write after the event
+     * graph, which is the whole problem P8 could not solve. */
+    bool ReadAnimRequest(const ModuleInfo& game)
+    {
+        wchar_t path[MAX_PATH]{};
+        if (!Ue4ssPath(L"\\SBLove_anim.txt", path, MAX_PATH)) return false;
+        if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) return false;
+
+        HANDLE file = CreateFileW(path, GENERIC_READ,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return false;
+
+        char buffer[512]{};
+        DWORD read = 0;
+        ReadFile(file, buffer, sizeof(buffer) - 1, &read, nullptr);
+        CloseHandle(file);
+        buffer[read] = '\0';
+
+        unsigned long long instance = 0;
+        unsigned offset = 0;
+        float value = 1.0f;
+        if (sscanf_s(buffer, "instance=0x%llx offset=0x%x value=%f",
+                     &instance, &offset, &value) < 2)
+        {
+            Log("SBLove_anim.txt is malformed: %s", buffer);
+            return false;
+        }
+
+        Log("");
+        Log("######## MILESTONE 4 -- winning the CustomAnimAlpha race ########");
+        Log("");
+        return Hooks::HoldAnimAlpha(game.base, Log,
+                                    reinterpret_cast<void*>(instance),
+                                    offset, value);
+    }
+
     /* Runs when the hijacked console command fires.
      *
      * The FString argument is still sitting unparsed in the FFrame. Reading it
@@ -218,19 +271,45 @@ namespace
             Log("");
 
             long last = 0;
-            for (int attempt = 0; attempt < 600; ++attempt)
+            bool announced_alpha = false;
+            long last_writes = 0;
+
+            for (int attempt = 0; attempt < 900; ++attempt)
             {
                 const long now = Hooks::CommandCount();
                 if (now != last)
                 {
                     Log("HOOK FIRED -- %ld call%s so far", now, now == 1 ? "" : "s");
-                    Log("");
-                    Log("  MILESTONE 3 PASSED");
-                    Log("  An inline hook on a hollow console command ran our code.");
-                    Log("  The game's own console is now a channel into native code,");
-                    Log("  and inline hooking works in this process.");
                     last = now;
                 }
+
+                /* The Lua side writes this once it has found Eve's anim
+                 * instance, which cannot happen before gameplay. */
+                if (!announced_alpha && ReadAnimRequest(game))
+                {
+                    announced_alpha = true;
+                }
+
+                if (announced_alpha)
+                {
+                    const long writes = Hooks::AlphaWrites();
+                    if (writes > 0 && last_writes == 0)
+                    {
+                        Log("");
+                        Log("ALPHA HELD -- first re-assertion landed");
+                        Log("  %ld writes, %ld ProcessEvent calls seen",
+                            writes, Hooks::ProcessEventCalls());
+                        Log("  The write is now ordered AFTER the event graph,");
+                        Log("  which is what a Lua timer could never do.");
+                    }
+                    else if (writes > 0 && (attempt % 20) == 0)
+                    {
+                        Log("  holding: %ld writes / %ld ProcessEvent calls",
+                            writes, Hooks::ProcessEventCalls());
+                    }
+                    last_writes = writes;
+                }
+
                 Sleep(500);
             }
         }

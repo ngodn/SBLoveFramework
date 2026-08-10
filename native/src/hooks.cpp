@@ -83,6 +83,64 @@ namespace
 
     Hooks::CommandCallback g_command_callback = nullptr;
 
+    /* ------------------------------------------------------- the anim race */
+
+    /* From ue4ss/UE4SS.log, which resolves these for this exact binary:
+     *     ProcessEvent address 0x142b744c0
+     * The module loads at its preferred base 0x140000000, so this is the RVA. */
+    constexpr uintptr_t kProcessEventRva = 0x02B744C0;
+
+    /* Checked before patching. ProcessEvent runs for every UFunction call in
+     * the engine, so patching the wrong address here is far more destructive
+     * than getting a hollow cheat wrong.
+     *
+     *   40 55             push rbp
+     *   56                push rsi
+     *   57                push rdi
+     *   41 54             push r12
+     */
+    constexpr unsigned char kProcessEventPrologue[] = {
+        0x40, 0x55, 0x56, 0x57, 0x41, 0x54
+    };
+
+    /* void UObject::ProcessEvent(UFunction* Function, void* Parms)
+     * A member function, so under Microsoft x64 `this` arrives in RCX. */
+    using ProcessEventFunc = void(__fastcall*)(void* Object, void* Function,
+                                               void* Parms);
+
+    ProcessEventFunc g_original_process_event = nullptr;
+
+    void* g_anim_instance = nullptr;
+    uint32_t g_alpha_offset = 0;
+    float g_alpha_value = 1.0f;
+
+    volatile LONG g_alpha_writes = 0;
+    volatile LONG g_process_event_calls = 0;
+
+    void __fastcall ProcessEventDetour(void* Object, void* Function, void* Parms)
+    {
+        /* Everything before the original runs on EVERY UFunction call in the
+         * engine, so it is one load, one compare and one increment. Anything
+         * heavier here is the fps cliff that made the Lua route unusable. */
+        InterlockedIncrement(&g_process_event_calls);
+
+        if (g_original_process_event)
+        {
+            g_original_process_event(Object, Function, Parms);
+        }
+
+        /* After, so the write lands after the event graph has set the alpha to
+         * zero. This ordering is the entire point; doing it before the original
+         * would reproduce P8's failure exactly. */
+        if (Object != nullptr && Object == g_anim_instance)
+        {
+            auto* alpha = reinterpret_cast<float*>(
+                reinterpret_cast<uintptr_t>(Object) + g_alpha_offset);
+            *alpha = g_alpha_value;
+            InterlockedIncrement(&g_alpha_writes);
+        }
+    }
+
     void __fastcall ChangeWorldDetour(void* Context, void* Stack, void* Result)
     {
         InterlockedIncrement(&g_change_world_calls);
@@ -166,6 +224,74 @@ namespace Hooks
     long CommandCount()
     {
         return InterlockedCompareExchange(&g_change_world_calls, 0, 0);
+    }
+
+    bool HoldAnimAlpha(uintptr_t module_base, LogFunc log,
+                       void* anim_instance, uint32_t alpha_offset, float value)
+    {
+        const auto target = module_base + kProcessEventRva;
+
+        log("holding CustomAnimAlpha");
+        log("  anim instance: 0x%016llX",
+            reinterpret_cast<unsigned long long>(anim_instance));
+        log("  alpha offset:  +0x%X", alpha_offset);
+        log("  value:         %.2f", value);
+        log("  ProcessEvent at RVA 0x%08llX -> 0x%016llX",
+            static_cast<unsigned long long>(kProcessEventRva),
+            static_cast<unsigned long long>(target));
+
+        /* The address came from UE4SS's own log for this exact binary, which
+         * makes it well sourced but not verified. Patching the wrong function
+         * here would be far worse than with a hollow cheat: ProcessEvent runs
+         * for every UFunction call in the engine. */
+        auto* code = reinterpret_cast<const unsigned char*>(target);
+        char found[3 * sizeof(kProcessEventPrologue) + 1]{};
+        for (size_t i = 0; i < sizeof(kProcessEventPrologue); ++i)
+        {
+            sprintf_s(found + i * 3, 4, "%02X ", code[i]);
+        }
+        log("  prologue: %s", found);
+
+        if (memcmp(code, kProcessEventPrologue,
+                   sizeof(kProcessEventPrologue)) != 0)
+        {
+            log("  PROLOGUE MISMATCH, refusing to patch ProcessEvent");
+            log("  Re-read 'ProcessEvent address' from ue4ss/UE4SS.log.");
+            return false;
+        }
+
+        g_anim_instance = anim_instance;
+        g_alpha_offset = alpha_offset;
+        g_alpha_value = value;
+
+        void* original = nullptr;
+        if (MH_CreateHook(reinterpret_cast<void*>(target),
+                          reinterpret_cast<void*>(&ProcessEventDetour),
+                          &original) != MH_OK)
+        {
+            log("  MH_CreateHook failed on ProcessEvent");
+            return false;
+        }
+        g_original_process_event = reinterpret_cast<ProcessEventFunc>(original);
+
+        if (MH_EnableHook(reinterpret_cast<void*>(target)) != MH_OK)
+        {
+            log("  MH_EnableHook failed on ProcessEvent");
+            return false;
+        }
+
+        log("  ProcessEvent hooked; alpha is re-asserted after every event");
+        return true;
+    }
+
+    long AlphaWrites()
+    {
+        return InterlockedCompareExchange(&g_alpha_writes, 0, 0);
+    }
+
+    long ProcessEventCalls()
+    {
+        return InterlockedCompareExchange(&g_process_event_calls, 0, 0);
     }
 
     void Remove()

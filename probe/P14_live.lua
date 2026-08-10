@@ -195,6 +195,7 @@ function Commands.help()
     Say("status | bones <sub> | where <bone> | nodes [minweight] | get <prop>")
     Say("pick <NodeName> | bone <BoneName> | pose <p> <y> <r> [mode] [space]")
     Say("alpha <v> | hold <name|0xOFF> <v> | holds | clear | exec <cmd>")
+    Say("swap <animPath> | unswap    upper-body custom slot content")
     Say("mode: 0 ignore 1 replace 2 additive   space: 0 world 1 comp 2 parent 3 bone")
 end
 
@@ -390,8 +391,50 @@ function Commands.holds()
     if n == 0 then Say("  nothing held") end
 end
 
+--- swap <animObjectPath>   put an animation into the upper-body custom slot
+---
+--- CustomAnimAlpha_Upper gates that slot, and holding it at 1.0 moves the hand
+--- a repeatable 4.0 cm. Only 4 cm because the slot is EMPTY, so the graph
+--- blends toward almost the pose it already had. Content is the missing half.
+---
+--- SBAnimGraphNode_CustomBlendSpacePlayer is the slot's player. A BlendSpace is
+--- a shared asset, so its samples are captured before the first write and
+--- restored by unswap; one left edited stays wrong until the level reloads.
+local CUSTOM_BS_NODE = "SBAnimGraphNode_CustomBlendSpacePlayer"
+
+function Commands.swap(path)
+    if not path then
+        Say("usage: swap /Game/Art/Character/PC/CH_P_EVE_01/Animation/Name.Name")
+        Say("       unswap   to put the BlendSpace back")
+        return
+    end
+    local instance = Instance()
+    if not IsLive(instance) then Say("no anim instance") return end
+
+    local node = Try(function() return instance[CUSTOM_BS_NODE] end)
+    if node == nil then Say(CUSTOM_BS_NODE .. " not found") return end
+
+    local space = Playback.GetBlendSpace(node)
+    if not IsLive(space) then
+        Say("node has no BlendSpace assigned; nothing to swap into")
+        return
+    end
+
+    local ok, err = Playback.SwapBlendSpace(space, path)
+    Say(string.format("swap %s -> %s", path, ok and "ok" or tostring(err)))
+    if ok then
+        Say("hold customanimupper 1.0 to blend it in, then measure")
+    end
+end
+
+function Commands.unswap()
+    local restored = Playback.RestoreAllBlendSpaces()
+    Say(string.format("restored %s BlendSpace(s)", tostring(restored)))
+end
+
 function Commands.clear()
     Holds = {}
+    Try(Playback.RestoreAllBlendSpaces)
     Restore()
     Say("node restored, pose and holds dropped")
 end

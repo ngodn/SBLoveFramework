@@ -28,7 +28,7 @@ Hand displacement from holding each variable at 1.0, `Bip001-R-Hand`:
 
 | variable | offset | movement |
 | --- | --- | --- |
-| `CustomAnimAlpha_Upper` | `+0x11378` | **14.5 cm** |
+| `CustomAnimAlpha_Upper` | `+0x11378` | **4.0 cm, exactly repeatable** |
 | `EventMoveIKAlpha_Hand_R` | `+0x11CBC` | 2.0 cm |
 | `EventMoveIKAlpha` | `+0x11C20` | 2.0 cm |
 | `IKAlphaRight` | `+0x113AC` | none |
@@ -37,12 +37,25 @@ Hand displacement from holding each variable at 1.0, `Bip001-R-Hand`:
 
 Releasing every hold returned the hand to baseline exactly, to two decimals.
 
+`CustomAnimAlpha_Upper` was then re-measured over four on/off cycles and gave
+byte-identical positions every time:
+
+```
+off  (57494.14, -84486.51, 2209.75)
+ON   (57492.78, -84489.97, 2208.27)
+```
+
+4.0 cm, repeatable, reversible, and visible on screen. A first single-shot
+reading of 14.5 cm was inflated by the character still settling; four cycles
+is what separated the effect from the settle.
+
 `CustomAnimAlpha_Upper` is the one worth building on. It gates the upper-body
 custom animation path, which is the right shape for this framework: the upper
 body can be posed while the lower body keeps its normal idle and locomotion.
 
-It moves the hand 14.5 cm with no animation loaded in that slot, so what is
-being measured is the blend toward whatever the slot currently holds. Putting
+It moves the hand only 4.0 cm because the slot is EMPTY, so the graph blends
+toward very nearly the pose it already had. The small size is the evidence that
+content is the missing half, not that the lever is weak. Putting
 real content there is the next step, and the BlendSpace sample swap in
 [playback.md](playback.md) is the proven way to do it.
 

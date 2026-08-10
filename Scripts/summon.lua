@@ -235,11 +235,53 @@ function Summon.LoadClass(assetPath)
     return nil, "class not found: " .. classPath
 end
 
+--- Everything that can be checked WITHOUT spawning anything.
+---
+--- Split out because the spawn itself crashed the game. The call chain has
+--- several steps that can each fail, and only the last one is dangerous, so
+--- there is no reason to risk the process to learn whether the first ones work.
+---
+--- Read-only. Safe to run anywhere.
+function Summon.Diagnose(assetPath)
+    local report = {}
+
+    local statics = GameplayStatics()
+    report[#report + 1] = "UGameplayStatics CDO: " ..
+        (statics and "found" or "NOT FOUND")
+
+    local classPath = Summon.ClassPath(assetPath)
+    report[#report + 1] = "class path: " .. tostring(classPath)
+
+    local existing = Try(StaticFindObject, classPath)
+    report[#report + 1] = "already loaded: " ..
+        (IsLive(existing) and "yes" or "no")
+
+    local class, classError = Summon.LoadClass(assetPath)
+    report[#report + 1] = "resolves to: " ..
+        (class and FullName(class) or ("FAILED, " .. tostring(classError)))
+
+    return class ~= nil, table.concat(report, "\n    ")
+end
+
 --- Spawn a Blueprint character near the player through the engine.
+---
+--- DANGEROUS. This crashed the game once already, with the log stopping inside
+--- this function. The most likely cause is the FTransform below: it is a plain
+--- Lua table handed to a native call, and if UE4SS does not marshal it into a
+--- real FTransform the engine reads garbage. A deferred spawn also leaves a
+--- half-constructed actor in the world if anything throws between the two
+--- calls, which can crash later rather than here.
+---
+--- So it is opt-in. Callers pass allow=true deliberately, after Diagnose has
+--- shown the class resolves. Everything cheap and safe is checked first.
 ---
 --- `assetPath` is the Blueprint asset, without "_C":
 ---   /Game/Art/Character/NPC/CH_NPC_01/Blueprints/CH_NPC_01_Blueprint
-function Summon.SpawnClass(assetPath, offset)
+function Summon.SpawnClass(assetPath, offset, allow)
+    if not allow then
+        return nil, "spawning is opt-in; it crashed the game once and is " ..
+            "gated until the transform marshalling is verified"
+    end
     offset = offset or {}
 
     local statics = GameplayStatics()

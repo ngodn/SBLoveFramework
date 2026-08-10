@@ -104,6 +104,10 @@ local SOLO = {
     } },
 }
 
+--- Actor spawning crashed the game once, inside BeginDeferredActorSpawnFromClass
+--- or FinishSpawningActor. Off until the FTransform marshalling is verified.
+local ALLOW_SPAWN = false
+
 local POLL_MS      = 500
 local SETTLE_TICKS = 14    -- ~7 s, a summon needs time to arrive
 local LEVEL_TICKS  = 20
@@ -160,36 +164,37 @@ local function ReportCast()
         Out("")
         Out("################ SUMMONING ################")
 
-        -- Engine spawn first. SBCreateCharacter was measured inert in game:
-        -- the call does not throw and zero instances appear. That is the second
-        -- USBCheatManager function found stripped, so it is no longer the
-        -- preferred route.
+        -- READ ONLY. The actual spawn crashed the game, with the log stopping
+        -- inside SpawnClass, so it is gated behind ALLOW_SPAWN until the
+        -- FTransform marshalling is verified. Diagnose checks everything that
+        -- can be checked without constructing an actor, which is most of the
+        -- chain, and tells us whether the class path fix worked.
         for _, entry in ipairs(SUMMONABLE) do
-            local actor, err = Summon.SpawnClass(entry.asset,
-                { forward = 200, yaw = 180 })
-            if actor then
-                local usable, detail = Summon.Inspect(actor)
-                Out(string.format("  SPAWNED %s via engine: %s",
-                    entry.name, tostring(detail)))
-                if usable then
-                    Partner, PartnerActor = entry.name, actor
-                    break
-                end
-                Out("    but it is not usable, dismissing it")
-                Summon.DismissAll()
-            else
-                Out(string.format("  %-6s engine spawn failed: %s",
-                    entry.name, tostring(err)))
-            end
+            local ok, report = Summon.Diagnose(entry.asset)
+            Out(string.format("  %-6s %s", entry.name, ok and "CLASS OK" or "no class"))
+            Out("    " .. tostring(report))
         end
 
-        -- Cheat manager route, kept only to confirm it stays dead.
-        if not Partner then
-            local ok, result = Summon.Character("N_Lily",
-                "CH_NPC_01_Blueprint_C", { forward = 200, yaw = 180 })
-            Out("  cheat-manager route: " ..
-                (ok and "called, checking" or tostring(result)))
-            if ok then Pending = result Pending.name = "Lily" end
+        if ALLOW_SPAWN then
+            Out("")
+            Out("  ALLOW_SPAWN is on; attempting a real spawn")
+            for _, entry in ipairs(SUMMONABLE) do
+                local actor, err = Summon.SpawnClass(entry.asset,
+                    { forward = 200, yaw = 180 }, true)
+                if actor then
+                    local usable, detail = Summon.Inspect(actor)
+                    Out(string.format("  SPAWNED %s: %s", entry.name, tostring(detail)))
+                    if usable then Partner, PartnerActor = entry.name, actor break end
+                    Out("    not usable, dismissing")
+                    Summon.DismissAll()
+                else
+                    Out(string.format("  %-6s spawn failed: %s", entry.name, tostring(err)))
+                end
+            end
+        else
+            Out("")
+            Out("  spawning is OFF (it crashed the game). Set ALLOW_SPAWN = true")
+            Out("  in main.lua to retry once the class report above looks right.")
         end
     end
 

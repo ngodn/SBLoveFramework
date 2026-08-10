@@ -349,3 +349,37 @@ The mapping itself is corroborated independently: the live game reported
 skeleton agrees exactly. The right arm sits one higher here (53-56 against the
 mesh's 52-55) because the mesh and skeleton orders differ slightly; the track
 map indexes the skeleton, so these are the correct numbers to write against.
+
+## Rotation keys: the encoder is exact
+
+Rotations are `ACF_Fixed48NoW` (AnimationCompression.h:86): a quaternion with W
+dropped, XYZ each a uint16.
+
+```
+encode  v = (int32)(component * 32767) + 32767
+decode  f = (v - 32767) / 32767
+W       = sqrt(1 - X*X - Y*Y - Z*Z), sign forced positive when encoding
+```
+
+Validated by decoding every key and re-encoding it against the original bytes,
+which is the only honest test of a quantiser:
+
+```
+206 rotation tracks across 17 files
+encoder mismatches: 0
+worst quaternion length error: 5.96E-008
+```
+
+Two details that would each have corrupted a fraction of keys:
+
+- **`(int32)` in C++ truncates toward zero.** Using rounding reproduced most
+  keys and quietly broke the rest.
+- **The flag bits are an axis bitmask**, not a count. `PerTrackNumComponentTable`
+  reading `3,1,1,2,1,2,2,3` is the popcount of each mask. A track with flags
+  `0x1` stores X only, and the absent axes decode to 0. `Bip001-R-Forearm` is
+  exactly that: an elbow rotating on one axis stores one component per key, so
+  a decoder assuming three would read 6 bytes where the file has 2 and every key
+  after the first would be garbage.
+
+Mask 0 is the documented special case: uncompressed rotation is encoded with 0
+rather than 7, so it means all three axes.

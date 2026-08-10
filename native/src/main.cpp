@@ -319,7 +319,13 @@ namespace
             bool announced_alpha = false;
             long last_writes = 0;
 
-            for (int attempt = 0; attempt < 900; ++attempt)
+            /* No iteration bound. This started as a timed probe, but it is
+             * now the live control loop: it polls the handoff file so a pose
+             * can be retuned while the game runs. A bounded loop quietly
+             * stopped re-reading after 7.5 minutes while the hook went on
+             * holding the last pose forever, which looked exactly like new
+             * poses having no effect. */
+            for (unsigned attempt = 0; ; ++attempt)
             {
                 const long now = Hooks::CommandCount();
                 if (now != last)

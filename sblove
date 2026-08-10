@@ -20,7 +20,7 @@ SB_DIR="${SB_DIR:-/mnt/eins0fxE/SteamLibrary/steamapps/common/StellarBlade}"
 UE4SS="$SB_DIR/SB/Binaries/Win64/ue4ss"
 CMD="$UE4SS/SBLove_cmd.txt"
 OUT="$UE4SS/SBLove_out.txt"
-TIMEOUT="${SBLOVE_TIMEOUT:-6}"
+TIMEOUT="${SBLOVE_TIMEOUT:-8}"
 
 [ -d "$UE4SS" ] || { echo "UE4SS not found at $UE4SS" >&2; exit 1; }
 
@@ -36,11 +36,16 @@ printf '%s %s\n' "$seq" "$*" > "$CMD"
 
 deadline=$(( $(date +%s) + TIMEOUT ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
-    if [ -f "$OUT" ] && [ "$(head -1 "$OUT" 2>/dev/null)" = "seq=$seq" ]; then
-        tail -n +2 "$OUT"
+    # Strip carriage returns. Lua writes these files from inside the game on
+    # Windows, where text mode turns every \n into \r\n. The first version
+    # compared against a bare "seq=..." and never matched, so it reported "no
+    # reply" for 20 seconds while the answer sat in the file the whole time,
+    # having arrived in 167 ms.
+    if [ -f "$OUT" ] && [ "$(head -1 "$OUT" 2>/dev/null | tr -d '\r')" = "seq=$seq" ]; then
+        tail -n +2 "$OUT" | tr -d '\r'
         exit 0
     fi
-    sleep 0.2
+    sleep 0.1
 done
 
 echo "no reply within ${TIMEOUT}s." >&2

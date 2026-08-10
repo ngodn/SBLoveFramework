@@ -1,137 +1,119 @@
-# The engine instruction set
+# The cheat manager is hollow
 
-Written 2026-08-11. This is the API SBLove Mode is built on.
+Rewritten 2026-08-11, after measuring. **The previous version of this file was
+wrong**, and wrong in an expensive way: it called `USBCheatManager`'s 698
+developer commands "the engine instruction set" and mapped the whole mode engine
+onto them. They do nothing. Nothing in this document is a route to anything.
 
-Stellar Blade ships `USBCheatManager` with **698 developer commands**. They are
-the tools the developers used to build and debug the game: load a world, create
-a character, swap a mesh, play an animation on a tagged actor, drive the camera,
-hide the HUD. Nearly every primitive a scene mode needs already exists.
+It is kept rather than deleted so the route is not re-proposed later.
 
-## They are reachable, and how we know
+## What was claimed
 
-Reachable through `ConsoleCommand` on the player controller, not by calling the
-UFunction directly.
+That Stellar Blade shipped a complete toolkit for a scene mode:
 
-The evidence is [probe_v13_console.txt](../../research/probe_v13_console.txt).
-It ran seven commands and two of them demonstrably changed the game:
+| Wanted | Command |
+| --- | --- |
+| load a world | `SBChangeWorld`, `SBEnterWorld` |
+| load a cast | `SBCreateCharacter` |
+| play a scene | `SBPlayCustomAnimByTag`, `SBPlayShow` |
+| change appearance | `SBChangeBody`, `SBChangeFace` |
+| presentation | `SBGameOptionHUDVisible`, `SBCameraFOV` |
+
+The functions exist. They are reflected, findable by path, and their `UFunction`
+objects carry a valid pointer to real, non-stub machine code. Every surface
+check said yes.
+
+## What is actually true
+
+The bodies are compiled out of the shipping build. What survives is the
+engine-generated exec thunk, which unmarshals parameters and returns.
+
+`execSBCreateCharacter`, disassembled from the shipped exe at RVA `0x026A36A0`:
 
 ```
-TEST 2/7  ConsoleCommand("slomo 0.5")            >>> SLOMO TOOK EFFECT <<<
-TEST 7/7  ConsoleCommand("SBPlayerBattleState")   >>> SKILL FIRED <<<
+movq  0x20(%rbx), %rax     ; Stack.Code
+setne %sil
+addq  %rax, %rsi
+movq  %rsi, 0x20(%rbx)     ; P_FINISH
+...epilogue...
+retq                       ; nothing is ever called
 ```
 
-`SBPlayerBattleState` is a `USBCheatManager` member (SB.hpp:16392). A cheat
-manager function produced an observable effect, so the object is live and the
-class is reachable. An earlier session recorded "cheat manager inert" after
-`SBCreateCharacter` did nothing; that conclusion was wrong. One command failing
-is an argument or state problem, not proof the whole class is dead.
+All five parameters are parsed correctly. Then it returns.
 
-## The return value proves nothing
+## The control, which is the only reason this is a finding
 
-In the same probe:
+A thunk that looks empty proves nothing without a working one to compare
+against, in the same binary, built by the same compiler.
+
+`GameplayStatics.GetTimeSeconds`, which P9 proved works, at RVA `0x04755750`:
 
 ```
-TEST 1/7  ConsoleCommand("ThisCommandDoesNotExist123") -> true
+movq  %rdi, 0x20(%rbx)     ; P_FINISH
+callq 0x14462bd30          ; calls the implementation
+testq %rax, %rax
+movss 0x748(%rax), %xmm0   ; reads the value
+movss %xmm0, (%rsi)        ; stores the result
+retq
 ```
 
-`ConsoleCommand` returns `true` for a command that does not exist. **Never treat
-a return value as confirmation.** Every command below has to be verified by an
-observable change in the world, measured before and after. Five of the seven
-commands in that probe returned `true` and did nothing at all.
+The live one does its work after `P_FINISH`. The cheat has no work to do.
 
-## The instruction set
+An earlier attempt used `SBPlayerBattleState` as the control, on the strength of
+probe_v13 reporting it fired. That reading was wrong, and the binary says so:
 
-Signatures from `USBCheatManager`, SB.hpp lines 16000-16709. Console arguments
-are positional and space separated.
-
-### World
-
-| Command | Purpose |
-| --- | --- |
-| `SBChangeWorld(FString changeWorld)` | load a world |
-| `SBEnterWorld(FName EnterWorldAlias)` | enter a world by alias |
-| `SBZoneEvent(FName InEventAlias)` | fire a zone event |
-| `SBBlockLevelStreaming(bool bBlock)` | pin streaming, relevant to the teleport failures |
-| `SBEnvState(FName EnvAlias, FName TagName)` | environment state |
-| `SBCurrentWorldInfo()` | report where we are |
-
-### Cast
-
-| Command | Purpose |
-| --- | --- |
-| `SBCreateCharacter(FName Alias, float X, float Y, float Z, float Yaw)` | spawn by CharacterTable alias, **relative** to the player |
-| `SBCharacterDespawnFromTag(FString InTag)` | remove by tag |
-| `SBHideActor(FString TagName, bool bHide)` | hide without removing |
-| `SBActorInfo(FString inActorName)` | inspect an actor |
-
-Aliases come from `CharacterTable`. See [character-map.md](character-map.md).
-
-### Appearance
-
-| Command | Purpose |
-| --- | --- |
-| `SBChangeBody(FName MeshPath)` | swap body mesh |
-| `SBChangeFace(FName MeshPath)` | swap face mesh |
-| `SBChangeMesh(int32 MeshInfoIndex, FName MeshPath, FName AnimPath)` | swap a mesh slot with its anim |
-| `SBEquipBodySuit(int32 ShortCutNum)` | equip an outfit |
-
-This is the native outfit backend, so CNS stays optional as designed.
-
-### Animation
-
-The important one:
-
-```cpp
-SBPlayCustomAnimByTag(FString InActorTag, FString InAnimName, int32 inCustomIndex,
-                      float InPlayStartTime, float InPlayEndTime, float InPlayRate,
-                      float InBlendInTime, float InBlendOutTime,
-                      bool bInLoop, int32 LoopCount);
+```
+SBPlayerBattleState      Func: 0x142683F40
+SBGameOptionHUDVisible   Func: 0x142683F40
 ```
 
-Per-actor targeting by tag, with blend in and out, play rate, a time window and
-looping. Two actors can be driven independently, and stage transitions can be
-blended rather than snapped.
+One address for two different commands. Linkers fold functions whose code is
+byte identical, and two semantically different cheats can only be identical if
+neither has a body.
 
-| Command | Purpose |
-| --- | --- |
-| `SBPlayCustomAnim(...)` | play on the player |
-| `SBPlayCustomAnimByTag(...)` | play on a tagged actor |
-| `SBPlayCustomAnimMeshSlot(..., ESBSkelMeshSlot inMeshSlot)` | play on one mesh slot |
-| `SBPlayCustomAnimMeshSlotByTag(...)` | both at once |
-| `SBPlayCustomAnimByFolder(FString InFolderPath)` | play a folder of animations |
-| `SBPlayShow(FString InShowDataPath)` | play a full authored show |
-| `SBPlayCameraAnim(FString InPath)` | play a camera animation |
+## What still works
 
-`SBPlayCustomAnimMeshSlotByTag` means **face and body can run different
-animations on the same actor at the same time**, which is the layering that
-makes performance read as performance rather than as a looping clip.
+- **`slomo`** and other engine console commands. These are UE's own, not the
+  game's, and P9 measured a time-rate ratio of 0.52 under `slomo 0.5`.
+- **`KismetSystemLibrary.ExecuteConsoleCommand`** as the delivery route.
+  `PlayerController:ConsoleCommand` never worked from Lua.
+- Everything reflected: properties, `StaticFindObject`, `FindAllOf`. The
+  framework's existing playback, placement and physics are untouched by this.
 
-`SBPlayCustomAnimByFolder` is worth investigating as an addon delivery route: if
-it enumerates a folder, an addon may be able to ship animations as files rather
-than as table rows.
+## What this costs
 
-### Presentation
+Three things that were treated as solved are not:
 
-| Command | Purpose |
-| --- | --- |
-| `SBGameOptionHUDVisible(bool bVisible)` | hide the HUD |
-| `SBCameraFOV(float InNewFov)` | field of view |
-| `SBPlayerMoveTo(float X, float Y, float Z, ...)` | walk the player somewhere |
-| `slomo <float>` | time dilation, **verified working** |
+- **Loading a cast.** `SBCreateCharacter` is dead, alongside the engine spawn
+  (empty shell), `ServerRequest_CreateActor` (RPCs do not execute, probe_v19)
+  and `LoadAsset` on a character Blueprint (crashes). Scenes have to be staged
+  where the characters already exist.
+- **Loading a world.** `SBChangeWorld` is dead. Placement stays manual, and
+  level streaming remains the constraint it was.
+- **Animation via the game's own player.** `SBPlayCustomAnimByTag` is dead. The
+  BlendSpace sample swap in [playback.md](playback.md) is not a fallback, it is
+  the mechanism.
 
-## What this changes
+## How to check a command before believing in it
 
-The BlendSpace sample-swap in [playback.md](playback.md) was built without
-knowing `SBPlayCustomAnimByTag` existed. It works, and it stays as the fallback,
-but a command with blend in/out and per-actor targeting is a better instrument
-if it verifies.
+This is cheap now, and no command should be trusted without it.
 
-Keep our own physics layer regardless. Nothing in the 698 commands drives
-secondary motion; [physics.lua](../Scripts/physics.lua) has no equivalent here.
+1. Lua: `StaticFindObject("/Script/SB.SBCheatManager:Name")`, then `GetAddress()`
+2. Native: read `Func` at `+0xD8` (`UFunction` is `0xE0`, `Func` is its last member)
+3. Subtract the module base, `0x140000000`, which is also the preferred base, so
+   RVAs apply directly with no rebasing
+4. `llvm-objdump -d --start-address=... --stop-address=...` on the shipped exe
+5. Look for a call **after** `P_FINISH`. No call means no body.
 
-## The discipline
+[probe/P10_targets.lua](../probe/P10_targets.lua) does steps 1 and 2 and hands
+the addresses to the native half.
 
-Every command in this document is **unverified** except `slomo` and
-`SBPlayerBattleState`. This file is a map of what to test, not a list of what
-works. The project's evidence standard applies: measure a real change in the
-world before and after, and treat anything else as unproven.
+## The lesson worth keeping
+
+Every cheap check passed. The function existed, resolved, had a valid code
+pointer, and did not begin with `ret`. The byte-level heuristic in the native
+probe reported "has a real body" for all seven functions, including the two that
+were provably empty.
+
+Only reading the actual instructions, against a known-good control, gave the
+right answer.

@@ -1,0 +1,13 @@
+# Nothing here is authored by this repo.
+
+# Output the mod writes into the game directory, occasionally copied back here
+# while investigating.
+*_scan.txt
+*_probe.txt
+
+# Local noise
+*.log
+*.tmp
+*.bak
+.DS_Store
+scratch/

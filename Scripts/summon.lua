@@ -297,25 +297,19 @@ function Summon.SpawnClass(assetPath, offset, allow)
     local player = Actors.GetPlayerPawn()
     if not IsLive(player) then return nil, "no player pawn" end
 
-    local origin = Actors.GetLocation(player)
-    local facing = Actors.GetRotation(player)
-    if not origin or not facing then return nil, "player transform unreadable" end
-
-    -- Place in the player's own frame, same convention as Actors.Align.
-    local theta = (facing.Yaw or 0.0) * math.pi / 180.0
-    local cos, sin = math.cos(theta), math.sin(theta)
-    local forward = offset.forward or 200.0
-    local right   = offset.right   or 0.0
-
-    local transform = {
-        Rotation    = { X = 0.0, Y = 0.0, Z = 0.0, W = 1.0 },
-        Translation = {
-            X = origin.X + forward * cos - right * sin,
-            Y = origin.Y + forward * sin + right * cos,
-            Z = origin.Z + (offset.up or 0.0),
-        },
-        Scale3D     = { X = 1.0, Y = 1.0, Z = 1.0 },
-    }
+    -- Borrow the player's own FTransform rather than building one.
+    --
+    -- A hand-built Lua table is the remaining unverified thing in this call: if
+    -- UE4SS does not marshal it into a real FTransform, the engine reads
+    -- garbage from the stack, which is a crash rather than an error. Asking the
+    -- player for its transform hands the engine a struct it made itself, so
+    -- there is nothing to marshal and nothing to get wrong.
+    --
+    -- Spawning on top of the player and moving afterwards is fine: placement is
+    -- the best proven primitive here, holding its target with zero horizontal
+    -- drift, and the actor exists for only a frame before it is moved.
+    local transform = Try(function() return player:GetTransform() end)
+    if transform == nil then return nil, "could not read the player transform" end
 
     -- 2 = AlwaysSpawn. Anything else risks the spawn being refused because a
     -- character-sized capsule overlaps geometry, which is common indoors and
@@ -333,6 +327,23 @@ function Summon.SpawnClass(assetPath, offset, allow)
     if not IsLive(spawned) then return nil, "FinishSpawningActor produced nothing" end
 
     summoned[#summoned + 1] = { actor = spawned, alias = assetPath }
+
+    -- Now move it clear of the player, in the player's frame, using the
+    -- placement path that is already proven.
+    local origin = Actors.GetLocation(player)
+    local facing = Actors.GetRotation(player)
+    if origin and facing then
+        local theta = (facing.Yaw or 0.0) * math.pi / 180.0
+        local cos, sin = math.cos(theta), math.sin(theta)
+        local forward = offset.forward or 200.0
+        local right   = offset.right   or 0.0
+        Actors.Place(spawned,
+            { X = origin.X + forward * cos - right * sin,
+              Y = origin.Y + forward * sin + right * cos,
+              Z = origin.Z + (offset.up or 0.0) },
+            { Pitch = 0.0, Yaw = facing.Yaw + (offset.yaw or 180.0), Roll = 0.0 })
+    end
+
     return spawned
 end
 

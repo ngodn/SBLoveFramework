@@ -106,7 +106,14 @@ local SOLO = {
 
 --- Actor spawning crashed the game once, inside BeginDeferredActorSpawnFromClass
 --- or FinishSpawningActor. Off until the FTransform marshalling is verified.
-local ALLOW_SPAWN = false
+--- Spawning is now attempted, but ONLY for a class already resident in memory.
+---
+--- The earlier crash was LoadAsset on a Blueprint, proven by a second crash
+--- with spawning disabled. The spawn call itself was never actually tested. The
+--- one unverified thing left in it, a hand-built FTransform, is gone: the
+--- player's own transform is borrowed instead, so the engine is handed a struct
+--- it made itself.
+local ALLOW_SPAWN = true
 
 --- How close a character has to be to become the partner. 8 m is close enough
 --- to be deliberate: you walk up to someone rather than triggering on whoever
@@ -188,8 +195,17 @@ local function ReportCast()
 
         if ALLOW_SPAWN then
             Out("")
-            Out("  ALLOW_SPAWN is on; attempting a real spawn")
+            Out("  attempting a spawn (resident classes only)")
             for _, entry in ipairs(SUMMONABLE) do
+                -- Skip anything not already loaded. Loading a character
+                -- Blueprint crashes the game, so a class that is absent is
+                -- simply not summonable right now.
+                local resident = Summon.LoadClass(entry.asset)
+                if not resident then
+                    Out(string.format("  %-6s not resident, skipped", entry.name))
+                    goto continue
+                end
+
                 local actor, err = Summon.SpawnClass(entry.asset,
                     { forward = 200, yaw = 180 }, true)
                 if actor then
@@ -201,6 +217,7 @@ local function ReportCast()
                 else
                     Out(string.format("  %-6s spawn failed: %s", entry.name, tostring(err)))
                 end
+                ::continue::
             end
         else
             Out("")

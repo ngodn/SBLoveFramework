@@ -100,6 +100,7 @@ local Step, Ticks = "wait", 0
 local Instance, ClassName = nil, nil
 local Best = { weight = 0.0, node = nil, was = 0.0, now = 0.0 }
 local Baseline, Latest = {}, {}
+local Natural = { delta = 0.0, node = nil }
 
 --- Snapshot every node's weight. Playback.DiscoverNodes already knows the 85
 --- node properties on this graph, so this reuses proven code rather than
@@ -278,6 +279,32 @@ local function Tick()
         Out(string.format("  %d nodes report a BlendWeight", count))
 
         Out("")
+        Out("CONTROL: 10 seconds of natural variation, hook not yet asked")
+        Out("  Idle animation moves node weights on its own. Without knowing")
+        Out("  how much, any later change is unattributable -- which is exactly")
+        Out("  how the first run reported a locomotion blendspace as a result.")
+        Step, Ticks = "control", 0
+        return
+    end
+
+    if Step == "control" then
+        local pawn = Actors.GetPlayerPawn()
+        local instance = Playback.GetAnimInstance(pawn, 0)
+        if IsLive(instance) then
+            for _, row in ipairs(Changed(Baseline, Weights(instance))) do
+                if row.delta > Natural.delta then
+                    Natural.delta, Natural.node = row.delta, row.prop
+                end
+            end
+        end
+        Ticks = Ticks + 1
+        if Ticks < 20 then return end
+
+        Out(string.format("  natural variation: %.3f%s", Natural.delta,
+            Natural.node and (" (" .. Natural.node .. ")") or ""))
+        Out("  anything at or below this proves nothing later.")
+
+        Out("")
         Out("handing the address to SBLoveNative")
         if not Handoff() then Step = "finished" return end
 
@@ -314,14 +341,15 @@ local function Tick()
         if Ticks >= 60 then
             Out("")
             Out("################ RESULT ################")
-            if Best.weight > 0.01 then
+            if Best.weight > Natural.delta + 0.05 then
                 Out(string.format("  A node responded: %s", Best.node))
                 Out(string.format("    weight %.3f -> %.3f", Best.was, Best.now))
                 Out("  The graph evaluated with our alpha, so the write is")
                 Out("  landing after the event graph. This is the route P8")
                 Out("  had to abandon because Lua could not order the write.")
             else
-                Out("  Node weight never rose above 0.")
+                Out(string.format("  Nothing exceeded natural variation (%.3f).",
+                    Natural.delta))
                 Out("")
                 Out("  Read the native log before concluding anything:")
                 Out("    ue4ss/Mods/SBLoveNative/SBLoveNative.txt")

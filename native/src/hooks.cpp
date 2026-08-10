@@ -103,6 +103,19 @@ namespace
         0x40, 0x55, 0x56, 0x57, 0x41, 0x54
     };
 
+    /* Where a 6-byte rip-relative jmp lands. FF 25 <disp32> reads a pointer
+     * from [rip + disp], and rip is the address of the next instruction, so
+     * the slot is at code + 6 + disp and the destination is what it holds. */
+    uintptr_t target_of_jump(const unsigned char* code, int32_t displacement)
+    {
+        const auto slot = reinterpret_cast<uintptr_t>(code) + 6 + displacement;
+        if (IsBadReadPtr(reinterpret_cast<void*>(slot), sizeof(uintptr_t)))
+        {
+            return 0;
+        }
+        return *reinterpret_cast<const uintptr_t*>(slot);
+    }
+
     /* void UObject::ProcessEvent(UFunction* Function, void* Parms)
      * A member function, so under Microsoft x64 `this` arrives in RCX. */
     using ProcessEventFunc = void(__fastcall*)(void* Object, void* Function,
@@ -252,10 +265,47 @@ namespace Hooks
         }
         log("  prologue: %s", found);
 
-        if (memcmp(code, kProcessEventPrologue,
-                   sizeof(kProcessEventPrologue)) != 0)
+        /* Three cases, and only the last is a refusal.
+         *
+         * The expected prologue means nobody else has touched it.
+         *
+         * A rip-relative jmp (FF 25) means somebody hooked it first. That is
+         * the normal case here: UE4SS hooks ProcessEvent for its own callbacks
+         * before our DLL runs, and the jump target lands outside the game
+         * module, which is how a foreign hook announces itself.
+         *
+         * Chaining onto that is fine and is what MinHook is for: our detour
+         * goes first, its trampoline holds the relocated jmp, and calling the
+         * original lands in UE4SS's detour and then the real function. What is
+         * NOT fine is assuming an unrecognised prologue is safe, because
+         * patching over another mod's trampoline would corrupt it, and CNS and
+         * everything else running under UE4SS would go down with it. */
+        const bool pristine = memcmp(code, kProcessEventPrologue,
+                                     sizeof(kProcessEventPrologue)) == 0;
+        const bool jump_thunk = code[0] == 0xFF && code[1] == 0x25;
+
+        if (pristine)
         {
-            log("  PROLOGUE MISMATCH, refusing to patch ProcessEvent");
+            log("  prologue is the original, nobody else has hooked this");
+        }
+        else if (jump_thunk)
+        {
+            const auto displacement =
+                *reinterpret_cast<const int32_t*>(code + 2);
+            const auto target = target_of_jump(code, displacement);
+            const bool foreign = target < module_base ||
+                                 target >= module_base + 0x14400000ULL;
+            log("  already hooked by someone else (jmp -> 0x%016llX%s)",
+                static_cast<unsigned long long>(target),
+                foreign ? ", outside the game module" : "");
+            log("  chaining after them rather than patching over their hook");
+        }
+        else
+        {
+            log("  PROLOGUE UNRECOGNISED, refusing to patch ProcessEvent");
+            log("  Not the original, and not a jump thunk either. Patching");
+            log("  blindly here would corrupt whatever is actually there, and");
+            log("  ProcessEvent runs for every UFunction call in the engine.");
             log("  Re-read 'ProcessEvent address' from ue4ss/UE4SS.log.");
             return false;
         }

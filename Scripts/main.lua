@@ -106,14 +106,24 @@ local SOLO = {
 
 --- Actor spawning crashed the game once, inside BeginDeferredActorSpawnFromClass
 --- or FinishSpawningActor. Off until the FTransform marshalling is verified.
---- Spawning is now attempted, but ONLY for a class already resident in memory.
+--- SPAWNING IS OFF, AND SHOULD STAY OFF.
 ---
---- The earlier crash was LoadAsset on a Blueprint, proven by a second crash
---- with spawning disabled. The spawn call itself was never actually tested. The
---- one unverified thing left in it, a hand-built FTransform, is gone: the
---- player's own transform is borrowed instead, so the engine is handed a struct
---- it made itself.
-local ALLOW_SPAWN = true
+--- The mechanism works: BeginDeferredActorSpawnFromClass plus
+--- FinishSpawningActor produce a real actor with no crash, once the FTransform
+--- is borrowed from the player rather than hand-built. That settles that the
+--- earlier crashes were LoadAsset and never the spawn.
+---
+--- What comes out is not a character. It has no body mesh COMPONENT at all,
+--- not merely an empty one, so the Blueprint's components are never
+--- constructed. Running the initialisation events the character exposes,
+--- NotifyBP_InitActor, NotifyBP_ReInitActor and NotifyBP_SetMesh, changes
+--- nothing: Stellar Blade builds those components somewhere this cannot reach.
+---
+--- Both summoning routes are therefore exhausted. SBCreateCharacter is inert
+--- like every other USBCheatManager function measured on this build, and the
+--- engine route yields an empty shell. Partners have to already exist in the
+--- world, which they do everywhere except a linear story section.
+local ALLOW_SPAWN = false
 
 --- How close a character has to be to become the partner. 8 m is close enough
 --- to be deliberate: you walk up to someone rather than triggering on whoever

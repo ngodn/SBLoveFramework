@@ -23,6 +23,7 @@ yet exercised with two actors.
 | Scene engine: stages + intensity axis | **working**, solo, measured in game |
 | Secondary motion coupled to intensity | **working**, persists and restores cleanly |
 | Contact colliders | written, untested |
+| Summoning absent characters | **not possible**, both routes exhausted |
 | Addon registry (`.sblove.json`) | **written**, validation tested offline |
 | Outfit backends (CNS + native) | not started |
 | In-game UI | not started |
@@ -115,6 +116,22 @@ for during development.
 - **The Lobby is not gameplay.** The main menu builds a fully valid player pawn
   in a level called `Lobby` where every check passes and every answer is
   meaningless. Gate on the pawn's object path.
+
+## Summoning: closed
+
+A partner must already exist in the world. Both routes were built and measured:
+
+| Route | Result |
+| --- | --- |
+| `SBCreateCharacter` (cheat manager) | inert. No throw, zero instances, counted before and after. The fifth `USBCheatManager` function measured dead on this build, alongside `SBWarpCamp`, `SBWarpWorld`, `SBWarpCampToPointName` and `SBPlayerUseSkill` |
+| `BeginDeferredActorSpawnFromClass` | **works**, produces a real actor with no crash. But it has no body mesh *component* at all, so the Blueprint's components are never constructed. `NotifyBP_InitActor`, `NotifyBP_ReInitActor` and `NotifyBP_SetMesh` do not fix it |
+
+Also: **`LoadAsset` on a character Blueprint crashes the game**, so a class that
+is not already resident cannot even be looked at. On an `AnimSequence` it is
+safe and the framework depends on it.
+
+This is a limit, not a gap. Characters exist everywhere except linear story
+sections, and `Actors.NearbyCharacters` finds them.
 
 ## External artefacts
 

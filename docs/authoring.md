@@ -383,3 +383,34 @@ Two details that would each have corrupted a fraction of keys:
 
 Mask 0 is the documented special case: uncompressed rotation is encoded with 0
 rather than 7, so it means all three axes.
+
+## The pipeline is complete, end to end
+
+```
+retoc to-legacy      pull Proto_Walk out of the shipped paks
+SBAnimTool --setrot  write a 45 degree roll on track 48, Bip001-R-UpperArm
+retoc to-zen         pack to .utoc/.ucas/.pak
+```
+
+The edit reads back exactly:
+
+```
+track 48 rot: 37 keys, ACF_Fixed48NoW, mask 0x7
+quat (-0.38268, 0, 0, 0.92388) -> 20228,32767,32767
+wrote 37 keys, 222 bytes
+uexp 49360 -> 49360, 220 bytes changed
+EDIT IS CONTAINED
+```
+
+`-0.38267` is `-sin(22.5°)`, which is exactly a 45 degree rotation, on all 37
+keys. 220 bytes rather than 222 because two original bytes already held those
+values.
+
+`--setrot` refuses reduced tracks. `Bip001-R-Forearm` stores one axis, so giving
+it a general rotation means widening the track, which moves every offset after
+it in the stream. That is a much riskier edit than overwriting keys in place,
+and doing it silently would be the worst of the three options.
+
+Installed as `~mods/SBLoveAnimTest_P` — 347 byte .pak, 52 KB .ucas, 544 byte
+.utoc. It overrides `Proto_Walk`, so a changed walk is the signal, and removing
+the three files reverses it completely.

@@ -251,3 +251,53 @@ rather than by a parser that accepted whatever it read.
 `ACF_Float96NoW` is three uncompressed 32-bit floats per key. Authoring a track
 in that format needs no quantisation at all, which is the natural choice for a
 hand-built pose.
+
+## Writing works
+
+Two gates, both passed.
+
+**Byte-exact round-trip, 17/17.** Loading and re-saving with no changes
+reproduces the input exactly:
+
+```
+.uasset: IDENTICAL  3274 bytes
+.uexp:   IDENTICAL  49360 bytes
+```
+
+This had to come first. Without it, any later difference would be ambiguous:
+there would be no way to tell a rejected edit from a broken serialiser.
+
+**A contained edit.** `--settrans` overwrites every translation key of one track
+and reports exactly what moved:
+
+```
+track 1 trans: 37 keys, ACF_Float96NoW
+wrote (10, 20, 30) to 37 keys, 444 bytes
+uexp size 49360 -> 49360
+bytes changed: 441   of at most 444
+EDIT IS CONTAINED
+```
+
+441 rather than 444 because three original bytes already held the new values.
+The file size is unchanged and nothing outside the track moved.
+
+The writer refuses anything it cannot encode exactly: non-`ACF_Float96NoW`
+formats, and reduced tracks storing fewer than three components. Silently
+writing a quantised format wrong would surface as a corrupted-looking animation
+in game, which is a far more expensive thing to debug than a refusal here.
+
+## Where this leaves authoring
+
+Reading, modifying and writing a cooked `AnimSequence` all work without an
+engine, on a machine where the engine cannot be built at all.
+
+What remains for a real pose:
+
+1. **Track to bone mapping.** `CompressedTrackToSkeletonMapTable` gives a bone
+   tree index per track; that has to be resolved against the skeleton to find
+   which track drives `Bip001-R-Forearm` and its parents.
+2. **Rotation keys.** An arm pose is mostly rotation, and those are
+   `ACF_Fixed48NoW`, 16 bits per component. Either re-encode into that format or
+   rewrite the track as `ACF_Float96NoW` and adjust its header and the offsets
+   that follow.
+3. **Pack and load.** `retoc to-zen`, then confirm the game loads it.

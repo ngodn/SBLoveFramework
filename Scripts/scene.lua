@@ -69,8 +69,14 @@ local Try, IsLive = Actors.Try, Actors.IsLive
 --- BlendSpace assets and neither could be restored reliably.
 local current = nil
 
+--- Non-fatal problems from the last apply. A scene can start with playback
+--- working and physics failing, and that combination is invisible unless it is
+--- recorded: the run that exposed this bug looked entirely successful.
+local lastProblems = {}
+
 function Scene.Current() return current end
 function Scene.IsActive() return current ~= nil end
+function Scene.LastProblems() return lastProblems end
 
 -- -------------------------------------------------------------- definitions
 
@@ -160,6 +166,7 @@ local function ApplyCurrentLoop()
     end
 
     if applied == 0 then
+        lastProblems = failures
         return false, table.concat(failures, "; ")
     end
 
@@ -167,16 +174,31 @@ local function ApplyCurrentLoop()
     -- is felt rather than only seen. Every actor in the scene gets it, since a
     -- partner whose physics stayed static would look inert next to one whose
     -- did not.
+    -- NOT wrapped in a silent Try. An earlier version was, and when the
+    -- scene-start apply failed the swallowed error was the only thing that
+    -- could have said why: levels 2..4 ramped correctly because they arrive
+    -- through SetIntensity, while level 1 silently kept the shipped values.
+    -- A pcall whose error is discarded is a pcall that hides the bug it exists
+    -- to survive, so failures are collected and reported instead.
     if Scene.PHYSICS_FOLLOWS_INTENSITY then
         local count = #stage.loops
-        for _, slot in pairs(current.roles) do
-            Try(function()
-                Physics.SetIntensityLevel(slot.target.instance,
-                    current.intensity, count)
-            end)
+        for role, slot in pairs(current.roles) do
+            local instance = slot.target and slot.target.instance
+            if not instance then
+                failures[#failures + 1] = role .. ": no anim instance for physics"
+            else
+                local ok, err = pcall(Physics.SetIntensityLevel,
+                    instance, current.intensity, count)
+                if not ok then
+                    failures[#failures + 1] = role .. ": physics threw " .. tostring(err)
+                elseif err == false then
+                    failures[#failures + 1] = role .. ": physics refused"
+                end
+            end
         end
     end
 
+    lastProblems = failures
     return true, applied, failures
 end
 

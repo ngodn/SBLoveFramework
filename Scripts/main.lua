@@ -135,6 +135,19 @@ local function StartScene()
     Out("")
     Out("################ SCENE STARTED ################")
     Out("  " .. Scene.Describe())
+
+    -- The previous run showed level 1 keeping the shipped physics values while
+    -- levels 2..4 ramped correctly, which means the apply that happens inside
+    -- Scene.Start did not take. Its error was being swallowed by a silent
+    -- pcall. Both are fixed; this prints whatever the engine now reports so the
+    -- cause is visible rather than inferred.
+    local problems = Scene.LastProblems()
+    if problems and #problems > 0 then
+        Out("  physics/playback problems at start:")
+        for _, problem in ipairs(problems) do Out("    " .. problem) end
+    else
+        Out("  no problems reported at start")
+    end
     return true
 end
 

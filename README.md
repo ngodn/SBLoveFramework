@@ -23,7 +23,7 @@ yet exercised with two actors.
 | Scene engine: stages + intensity axis | **working**, solo, measured in game |
 | Secondary motion coupled to intensity | **working**, persists and restores cleanly |
 | Contact colliders | written, untested |
-| Addon registry (`.sblove.json`) | not started |
+| Addon registry (`.sblove.json`) | **written**, validation tested offline |
 | Outfit backends (CNS + native) | not started |
 | In-game UI | not started |
 
@@ -80,6 +80,8 @@ tissue and stays put. See the notes in `Scripts/physics.lua`.
 | `Scripts/scene.lua` | 379 | stages, intensity, roles, teardown |
 | `Scripts/actors.lua` | 314 | resolution, placement, pairing maths, capture/restore |
 | `Scripts/contact.lua` | 315 | collision volumes, bone-bound and cross-actor driven |
+| `Scripts/registry.lua` | 330 | addon discovery, strict per-file validation |
+| `Scripts/json.lua` | 220 | decoder with line/column errors and surrogate pairs |
 | `Scripts/main.lua` | 227 | current demo harness |
 
 ## Install

@@ -1,0 +1,91 @@
+{
+  "id": "sblove.example",
+  "name": "Example Pack",
+  "author": "SBLoveFramework",
+
+  "_comment": [
+    "A worked example of the addon format. Copy this, change the ids, and",
+    "point the paths at animations your own pak ships.",
+    "",
+    "INSTALL TO:",
+    "  Content/Paks/~mods/SBLoveFramework/Scenes/<yourname>.sblove.json",
+    "beside the .pak/.utoc/.ucas carrying the animation assets themselves.",
+    "",
+    "The animations used below are Eve's own stock locomotion set, so this",
+    "pack runs with no extra assets installed. It is a demonstration of the",
+    "SHAPE, not of content.",
+    "",
+    "Keys beginning with an underscore are ignored by the loader."
+  ],
+
+  "scenes": [
+    {
+      "id": "example.solo_ramp",
+      "displayName": "Solo intensity ramp",
+      "tags": ["demo", "solo", "standing"],
+
+      "_actors": "Who plays each role. A is the anchor and stays put; B is placed relative to A. Names come from the character table, see docs/character-map.md.",
+      "actors": { "A": "Eve" },
+
+      "stages": [
+        {
+          "id": "locomotion",
+          "displayName": "Locomotion",
+
+          "_alignment": [
+            "Where B stands relative to A, in centimetres, in A's OWN frame:",
+            "  forward  +towards A's facing",
+            "  right    +to A's right",
+            "  up       +upwards",
+            "  yaw      B's facing relative to A. 180 = facing each other.",
+            "These belong to the animation. Two clips authored separately will",
+            "never line up from a formula, so whoever made them records the",
+            "offset that fits. Ignored when a scene has no B actor."
+          ],
+          "alignment": { "forward": 0, "right": 0, "up": 0, "yaw": 180 },
+
+          "_loops": [
+            "The intensity axis, gentlest first. The player moves along it",
+            "rather than picking from it, and secondary motion follows the",
+            "same axis automatically.",
+            "Each entry gives the animation for each actor. They start",
+            "together, so a pair authored as a pair stays in sync."
+          ],
+          "loops": [
+            { "A": "/Game/Art/Character/PC/CH_P_EVE_01/Animation/Proto_Walk.Proto_Walk" },
+            { "A": "/Game/Art/Character/PC/CH_P_EVE_01/Animation/Proto_Jog.Proto_Jog" },
+            { "A": "/Game/Art/Character/PC/CH_P_EVE_01/Animation/Proto_Run.Proto_Run" },
+            { "A": "/Game/Art/Character/PC/CH_P_EVE_01/Animation/Proto_Sprint.Proto_Sprint" }
+          ]
+        }
+      ]
+    },
+
+    {
+      "id": "example.paired",
+      "displayName": "Paired example",
+      "tags": ["demo", "paired", "standing"],
+
+      "_note": "A paired scene needs actors.B, and every loop that names a B animation needs one. Two actors of the SAME character are refused, because they would share one BlendSpace asset and one would overwrite the other.",
+      "actors": { "A": "Eve", "B": "Lily" },
+
+      "stages": [
+        {
+          "id": "facing",
+          "displayName": "Facing",
+          "alignment": { "forward": 70, "right": 0, "up": 0, "yaw": 180 },
+          "loops": [
+            {
+              "A": "/Game/Art/Character/PC/CH_P_EVE_01/Animation/Proto_Walk.Proto_Walk",
+              "B": "/Game/Art/Character/PC/CH_P_EVE_01/Animation/Proto_Walk.Proto_Walk"
+            },
+            {
+              "A": "/Game/Art/Character/PC/CH_P_EVE_01/Animation/Proto_Jog.Proto_Jog",
+              "B": "/Game/Art/Character/PC/CH_P_EVE_01/Animation/Proto_Jog.Proto_Jog"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

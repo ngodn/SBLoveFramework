@@ -165,9 +165,15 @@ function Actors.NearbyCharacters(maxDistance)
     local all = Try(FindAllOf, "SBCharacter")
     if not all then return {} end
 
+    -- Compare by object path, NOT with ~=. UE4SS hands back a distinct Lua
+    -- wrapper each time it exposes the same UObject, so identity comparison
+    -- silently fails. A first version used ~= and duly offered Eve herself as
+    -- a partner, at a distance of 0 cm.
+    local playerPath = FullName(player)
+
     local found = {}
     for _, candidate in ipairs(all) do
-        if IsLive(candidate) and candidate ~= player then
+        if IsLive(candidate) and FullName(candidate) ~= playerPath then
             local distance = Try(function()
                 return player:GetDistanceTo(candidate) end)
             if type(distance) == "number" and distance <= maxDistance then

@@ -48,6 +48,7 @@ local Actors   = require("actors")
 local Physics  = require("physics")
 local Scene    = require("scene")
 local Registry = require("registry")
+local Summon   = require("summon")
 
 local ModName    = "SBLove"
 local OutputFile = "ue4ss/SBLoveFramework_scan.txt"
@@ -58,6 +59,15 @@ local EVE = "/Game/Art/Character/PC/CH_P_EVE_01/Animation/"
 --- ever IS present the pairing should be tried, but she is a boss so absence is
 --- the normal answer.
 local PARTNERS = { "Lily", "Adam", "Tachy", "Drone", "Raven" }
+
+--- Alias and expected class for characters we can try to summon. Aliases are
+--- CharacterTable row names; classes come from CharacterAppearanceTable's
+--- CharacterAssetPath with "_C" appended. See docs/character-map.md.
+local SUMMONABLE = {
+    { name = "Lily",  alias = "N_Lily",     class = "CH_NPC_01_Blueprint_C"      },
+    { name = "Adam",  alias = "N_Adam",     class = "CH_NPC_Adam_01_Blueprint_C" },
+    { name = "Tachy", alias = "N_TachyNPC", class = "CH_NPC_TachyNPC_Blueprint_C"},
+}
 
 --- Built in so the run does not depend on an addon being installed. Same shape
 --- as addons/example.sblove.json.
@@ -92,7 +102,7 @@ local SOLO = {
 }
 
 local POLL_MS      = 500
-local SETTLE_TICKS = 6
+local SETTLE_TICKS = 14    -- ~7 s, a summon needs time to arrive
 local LEVEL_TICKS  = 20
 
 local Try, IsLive, FullName = Actors.Try, Actors.IsLive, Actors.FullName
@@ -119,6 +129,7 @@ local LastWait = nil
 local Partner  = nil
 
 local PartnerActor = nil
+local Pending      = nil     -- an in-flight summon, collected on later ticks
 
 local function ReportCast()
     Out("")
@@ -139,11 +150,34 @@ local function ReportCast()
         end
     end
 
-    -- The named characters are not loaded everywhere, and waiting to reach a
-    -- populated area to test pairing at all is a poor trade. Any SBCharacter
-    -- with an anim instance works as a partner: what pairing needs is a second
-    -- actor, not a particular one.
+    -- If nobody we want is here, ask the game to bring one in. This is the
+    -- point of the mod being a mode you enter: it should not depend on the cast
+    -- happening to be nearby.
     if not Partner then
+        Out("")
+        Out("################ SUMMONING ################")
+        for _, entry in ipairs(SUMMONABLE) do
+            local ok, result = Summon.Character(entry.alias, entry.class,
+                { forward = 200, yaw = 180 })
+            if ok then
+                Out(string.format("  requested %s (%s), checking if it arrives",
+                    entry.name, entry.alias))
+                Pending = result
+                Pending.name = entry.name
+                break
+            end
+            Out(string.format("  %-6s could not be requested: %s",
+                entry.name, tostring(result)))
+        end
+        if not Pending then
+            Out("  no summon route available")
+        end
+    end
+
+    -- Whatever else is standing around, as a last resort. Any SBCharacter with
+    -- an anim instance works as a partner: what pairing needs is a second
+    -- actor, not a particular one.
+    if not Partner and not Pending then
         local nearby = Actors.NearbyCharacters(3000.0)
         Out("")
         Out(string.format("  no named partner; %d other character%s nearby",
@@ -249,7 +283,9 @@ local function Tick()
             Scene.Stop()
             Out("  scene stopped (left gameplay), everything restored")
         end
-        Stage, Ticks, Level, Partner, PartnerActor = "wait", 0, 0, nil, nil
+        Try(function() Summon.DismissAll() end)
+        Stage, Ticks, Level, Partner, PartnerActor, Pending =
+            "wait", 0, 0, nil, nil, nil
         return
     end
 
@@ -265,6 +301,23 @@ local function Tick()
     Ticks = Ticks + 1
 
     if Stage == "settle" then
+        -- A summon is not complete when the call returns, so it is collected
+        -- over the following ticks rather than assumed to have worked.
+        if Pending and not PartnerActor then
+            local actor, info = Summon.Collect(Pending)
+            if actor then
+                Partner, PartnerActor = Pending.name, actor
+                Out(string.format("  %s ARRIVED at %.0f cm", Pending.name,
+                    type(info) == "number" and info or -1))
+                Pending = nil
+            elseif Ticks >= SETTLE_TICKS - 1 then
+                Out("  summon did not arrive: " .. tostring(info))
+                Out("  (USBCheatManager bodies are stripped in shipping builds;" ..
+                    " this confirms it for SBCreateCharacter)")
+                Pending = nil
+            end
+        end
+
         if Ticks >= SETTLE_TICKS then
             Stage = StartScene() and "levels" or "done"
             Ticks = LEVEL_TICKS
@@ -279,7 +332,10 @@ local function Tick()
                 Out("")
                 Out("################ DONE ################")
                 Scene.Stop()
-                Out("  scene stopped, everything restored")
+                local dismissed = Summon.DismissAll()
+                Out(string.format("  scene stopped, everything restored" ..
+                    "%s", dismissed > 0 and
+                    (", " .. dismissed .. " summoned character(s) dismissed") or ""))
                 Out("")
                 if Partner then
                     Out("Did they both animate, and did " .. Partner ..
@@ -315,4 +371,5 @@ pcall(RegisterOnUnloadCallback or function() end, function()
     Try(function() Playback.RestoreEverything() end)
     Try(function() Physics.RestoreAll() end)
     Try(function() Actors.RestoreAll() end)
+    Try(function() Summon.DismissAll() end)
 end)

@@ -161,3 +161,52 @@ frame, consistent with quantised keys rather than raw floats.
 
 Reading is solved. Writing is the next step: decode the per-track offsets and
 key data, replace the tracks for the arm chain, and re-encode.
+
+### Track data, fully decoded
+
+The 37308-byte buffer slices exactly, with no bytes left over:
+
+```
+CompressedTrackOffsets       276 int32   = 2 per track, translation then rotation
+ScaleOffsets.OffsetData      138 int32   = 1 per track, StripSize 1
+key stream                 35652 bytes
+                           ------
+                           37308        matches the buffer exactly
+```
+
+`-1` in an offset means the track has no data of that kind. Each track's entry
+in the key stream opens with a packed int32 header, decomposed per
+`FAnimationCompression_PerTrackUtils::DecomposeHeader`
+(AnimationCompression.h:788):
+
+```
+NumKeys     = Header & 0x00FFFFFF
+FormatFlags = (Header >> 24) & 0x0F
+KeyFormat   = (Header >> 28) & 0x0F
+```
+
+`Proto_Walk`, first tracks:
+
+```
+track 0   rot   keys=  1  ACF_Fixed48NoW          root, constant, no translation
+track 1   trans keys= 37  ACF_Float96NoW
+          rot   keys= 37  ACF_Fixed48NoW
+track 4   trans keys=  4  ACF_IntervalFixed32NoW  key-reduced
+track 6   trans keys=  2  ACF_Float96NoW
+```
+
+Key counts of 1, 2, 4 and 37 against a 37-frame sequence are what key reduction
+produces, and 37 matches `CompressedNumberOfFrames` exactly. Per-track formats
+differ track by track, which is why the three global format fields read
+`ACF_Identity`.
+
+A first attempt had the header fields the wrong way round and reported key
+counts in the millions. That is why the layout above was read out of the source
+rather than inferred from plausible-looking output.
+
+## State: reading is finished
+
+A shipped animation can now be taken apart completely, with no engine, from
+asset header down to per-track key formats. What remains for authoring is the
+write side: decode the individual keys for a chosen track, substitute new
+values, re-encode, and repack.

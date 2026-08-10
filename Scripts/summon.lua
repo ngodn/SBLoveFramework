@@ -194,16 +194,41 @@ local function GameplayStatics()
     return nil
 end
 
---- Load a Blueprint generated class from its asset path.
---- The runtime class is the asset name with "_C" appended.
+--- Load a Blueprint generated class from its package path.
+---
+--- UE object paths are Package.ObjectName, so the generated class of
+---
+---     /Game/Art/Character/NPC/CH_NPC_01/Blueprints/CH_NPC_01_Blueprint
+---
+--- is that path, a dot, the asset name again, and "_C":
+---
+---     /Game/.../CH_NPC_01_Blueprint.CH_NPC_01_Blueprint_C
+---
+--- Appending "_C" to the package path alone finds nothing, which is exactly how
+--- the first attempt failed. It is the same convention already used for
+--- animations (Proto_Walk.Proto_Walk).
+function Summon.ClassPath(assetPath)
+    local name = assetPath:match("([^/]+)$")
+    if not name then return nil end
+    return assetPath .. "." .. name .. "_C"
+end
+
 function Summon.LoadClass(assetPath)
-    local classPath = assetPath .. "_C"
+    local classPath = Summon.ClassPath(assetPath)
+    if not classPath then return nil, "malformed asset path: " .. tostring(assetPath) end
+
     local class = Try(StaticFindObject, classPath)
     if IsLive(class) then return class end
 
-    -- Loading the asset registers its generated class.
+    -- Loading the package registers its generated class.
     if type(LoadAsset) == "function" then
         Try(LoadAsset, assetPath)
+        class = Try(StaticFindObject, classPath)
+        if IsLive(class) then return class end
+
+        -- Some builds want the package's own object path to load.
+        local name = assetPath:match("([^/]+)$")
+        Try(LoadAsset, assetPath .. "." .. name)
         class = Try(StaticFindObject, classPath)
         if IsLive(class) then return class end
     end

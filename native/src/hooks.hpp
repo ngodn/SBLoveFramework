@@ -45,5 +45,32 @@ namespace Hooks
     long AlphaWrites();
     long ProcessEventCalls();
 
+    /* ---------------------------------------------------- procedural posing
+     *
+     * A ModifyBone node offers exactly the control a posed limb needs, and its
+     * fields are exposed pins, which means the anim graph re-copies them every
+     * frame. physics.lua learned that the hard way: writes to exposed pins
+     * revert before the next evaluation. So a pose has to be held by the same
+     * mechanism that holds the alpha.
+     *
+     * Lua sets BoneToModify, because that is an FName and constructing one
+     * natively is far more trouble than it is worth. Native holds the numbers.
+     *
+     * `node` is the ModifyBone node's address, which is the anim instance plus
+     * the node's offset in its class. Field offsets inside the node come from
+     * FAnimNode_ModifyBone in AnimGraphRuntime.hpp. */
+    struct Pose
+    {
+        void* node = nullptr;
+        float pitch = 0.0f, yaw = 0.0f, roll = 0.0f;
+        uint8_t rotation_mode = 2;   /* BMM_Additive */
+        uint8_t rotation_space = 3;  /* BCS_BoneSpace */
+        float alpha = 1.0f;
+    };
+
+    void HoldPose(const Pose& pose, LogFunc log);
+    void ClearPose();
+    long PoseWrites();
+
     void Remove();
 }

@@ -196,9 +196,44 @@ namespace
         Log("");
         Log("######## MILESTONE 4 -- winning the CustomAnimAlpha race ########");
         Log("");
-        return Hooks::HoldAnimAlpha(game.base, Log,
-                                    reinterpret_cast<void*>(instance),
-                                    offset, value);
+        if (!Hooks::HoldAnimAlpha(game.base, Log,
+                                  reinterpret_cast<void*>(instance),
+                                  offset, value))
+        {
+            return false;
+        }
+
+        /* An optional second line asks for a limb pose. Lua sets BoneToModify,
+         * because that is an FName; native holds the numbers, because they are
+         * exposed pins the graph re-copies every frame. */
+        const char* pose_line = strstr(buffer, "pose=");
+        if (pose_line)
+        {
+            unsigned long long node = 0;
+            float pitch = 0.0f, yaw = 0.0f, roll = 0.0f;
+            unsigned mode = 2, space = 3;
+            if (sscanf_s(pose_line,
+                         "pose=0x%llx pitch=%f yaw=%f roll=%f mode=%u space=%u",
+                         &node, &pitch, &yaw, &roll, &mode, &space) >= 4)
+            {
+                Log("");
+                Log("######## MILESTONE 5 -- procedural posing ########");
+                Log("");
+                Hooks::Pose pose{};
+                pose.node = reinterpret_cast<void*>(node);
+                pose.pitch = pitch;
+                pose.yaw = yaw;
+                pose.roll = roll;
+                pose.rotation_mode = static_cast<uint8_t>(mode);
+                pose.rotation_space = static_cast<uint8_t>(space);
+                Hooks::HoldPose(pose, Log);
+            }
+            else
+            {
+                Log("pose line present but malformed, ignoring it");
+            }
+        }
+        return true;
     }
 
     /* Runs when the hijacked console command fires.
@@ -304,8 +339,9 @@ namespace
                     }
                     else if (writes > 0 && (attempt % 20) == 0)
                     {
-                        Log("  holding: %ld writes / %ld ProcessEvent calls",
-                            writes, Hooks::ProcessEventCalls());
+                        Log("  holding: %ld alpha / %ld pose / %ld ProcessEvent",
+                            writes, Hooks::PoseWrites(),
+                            Hooks::ProcessEventCalls());
                     }
                     last_writes = writes;
                 }

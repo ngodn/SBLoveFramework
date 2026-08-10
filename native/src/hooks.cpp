@@ -130,6 +130,38 @@ namespace
     volatile LONG g_alpha_writes = 0;
     volatile LONG g_process_event_calls = 0;
 
+    /* Field offsets inside FAnimNode_ModifyBone (AnimGraphRuntime.hpp:345),
+     * where Alpha comes from its base FAnimNode_SkeletalControlBase. */
+    constexpr size_t kModifyBoneAlpha         = 0x2C;
+    constexpr size_t kModifyBoneRotation      = 0xE4;
+    constexpr size_t kModifyBoneRotationMode  = 0xFD;
+    constexpr size_t kModifyBoneRotationSpace = 0x100;
+
+    Hooks::Pose g_pose{};
+    volatile LONG g_pose_writes = 0;
+
+    /* Re-assert the pose. Called only from the detour, after the original, so
+     * it lands after the graph has re-copied its exposed pins. */
+    inline void ApplyPose()
+    {
+        const auto node = reinterpret_cast<uintptr_t>(g_pose.node);
+
+        *reinterpret_cast<float*>(node + kModifyBoneAlpha) = g_pose.alpha;
+
+        /* FRotator is pitch, yaw, roll as three consecutive floats. */
+        auto* rotation = reinterpret_cast<float*>(node + kModifyBoneRotation);
+        rotation[0] = g_pose.pitch;
+        rotation[1] = g_pose.yaw;
+        rotation[2] = g_pose.roll;
+
+        *reinterpret_cast<uint8_t*>(node + kModifyBoneRotationMode) =
+            g_pose.rotation_mode;
+        *reinterpret_cast<uint8_t*>(node + kModifyBoneRotationSpace) =
+            g_pose.rotation_space;
+
+        InterlockedIncrement(&g_pose_writes);
+    }
+
     void __fastcall ProcessEventDetour(void* Object, void* Function, void* Parms)
     {
         /* Everything before the original runs on EVERY UFunction call in the
@@ -151,6 +183,8 @@ namespace
                 reinterpret_cast<uintptr_t>(Object) + g_alpha_offset);
             *alpha = g_alpha_value;
             InterlockedIncrement(&g_alpha_writes);
+
+            if (g_pose.node != nullptr) ApplyPose();
         }
     }
 
@@ -342,6 +376,34 @@ namespace Hooks
     long ProcessEventCalls()
     {
         return InterlockedCompareExchange(&g_process_event_calls, 0, 0);
+    }
+
+    void HoldPose(const Pose& pose, LogFunc log)
+    {
+        log("holding a pose on ModifyBone node 0x%016llX",
+            reinterpret_cast<unsigned long long>(pose.node));
+        log("  rotation: pitch %.1f yaw %.1f roll %.1f",
+            pose.pitch, pose.yaw, pose.roll);
+        log("  mode %u (0 ignore, 1 replace, 2 additive), space %u",
+            pose.rotation_mode, pose.rotation_space);
+        log("  alpha %.2f", pose.alpha);
+        log("  held after every ProcessEvent, because a ModifyBone node's");
+        log("  fields are exposed pins and the graph re-copies them per frame");
+
+        /* Assigned last. The detour reads g_pose.node to decide whether to
+         * apply anything, so filling the rest first means it can never see a
+         * live pointer beside a half-written pose. */
+        g_pose = pose;
+    }
+
+    void ClearPose()
+    {
+        g_pose.node = nullptr;
+    }
+
+    long PoseWrites()
+    {
+        return InterlockedCompareExchange(&g_pose_writes, 0, 0);
     }
 
     void Remove()

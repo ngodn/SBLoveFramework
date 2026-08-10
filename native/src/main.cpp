@@ -47,6 +47,7 @@
 
 #include <cstdarg>
 #include <cwchar>
+#include <cstring>
 #include <cstdio>
 #include <cstdint>
 
@@ -145,6 +146,159 @@ namespace
         return true;
     }
 
+    /* ------------------------------------------------------ milestone 2 */
+
+    /* UFunction::Func, the pointer to the native implementation.
+     *
+     * CoreUObject.hpp gives UFunction a size of 0xE0 and Func is its final
+     * member, a pointer, so it sits at 0xD8. The dump lists no members for
+     * UFunction, so this is derived rather than read, and it is treated as an
+     * assumption to be checked: everything read through it is reported raw so a
+     * wrong offset shows up as obvious nonsense instead of a confident wrong
+     * answer. A Func inside the module's address range is the sanity check. */
+    constexpr size_t kUFunctionFuncOffset = 0xD8;
+
+    /* Is this address readable? Asking the OS beats trusting an address that
+     * arrived from another process's log file. */
+    bool Readable(const void* address, size_t bytes)
+    {
+        MEMORY_BASIC_INFORMATION info{};
+        if (!VirtualQuery(address, &info, sizeof(info))) return false;
+        if (info.State != MEM_COMMIT) return false;
+
+        const DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+                               PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
+                               PAGE_EXECUTE_WRITECOPY;
+        if (!(info.Protect & readable)) return false;
+        if (info.Protect & PAGE_GUARD) return false;
+
+        const auto start = reinterpret_cast<uintptr_t>(address);
+        const auto end = reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize;
+        return start + bytes <= end;
+    }
+
+    /* Read "NAME=0xADDR=note" lines that the Lua side wrote. Lua can find a
+     * UFunction object but cannot read a raw field inside it; that is the whole
+     * reason this half exists. */
+    void ReportTargets(const ModuleInfo& game)
+    {
+        wchar_t path[MAX_PATH]{};
+        if (!GetModuleFileNameW(g_self, path, MAX_PATH)) return;
+
+        /* main.dll -> dlls -> SBLoveNative -> Mods, landing on ue4ss */
+        for (int stripped = 0; stripped < 4; ++stripped)
+        {
+            wchar_t* slash = wcsrchr(path, L'\\');
+            if (!slash) return;
+            *slash = L'\0';
+        }
+        if (wcscat_s(path, MAX_PATH, L"\\SBLove_targets.txt") != 0) return;
+
+        HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE)
+        {
+            Log("no targets file yet; run the P10 Lua probe to produce one");
+            Log("  expected at ue4ss\\SBLove_targets.txt");
+            return;
+        }
+
+        char buffer[4096]{};
+        DWORD read = 0;
+        ReadFile(file, buffer, sizeof(buffer) - 1, &read, nullptr);
+        CloseHandle(file);
+        buffer[read] = '\0';
+
+        Log("");
+        Log("################ MILESTONE 2 -- are the cheat bodies real? ################");
+        Log("");
+        Log("  UFunction::Func assumed at +0x%zX (UFunction size 0xE0, Func last)",
+            kUFunctionFuncOffset);
+        Log("  A Func inside the module means the offset is right.");
+        Log("");
+
+        for (char* line = buffer; line && *line;)
+        {
+            char* next = strchr(line, '\n');
+            if (next) *next++ = '\0';
+
+            if (*line != '#' && *line)
+            {
+                char name[128]{};
+                unsigned long long address = 0;
+                if (sscanf_s(line, "%127[^=]=0x%llx", name,
+                             static_cast<unsigned>(sizeof(name)), &address) == 2)
+                {
+                    const char* note = strchr(line, '=');
+                    note = note ? strchr(note + 1, '=') : nullptr;
+                    note = note ? note + 1 : "";
+
+                    Log("  %s  (%s)", name, note);
+                    Log("    UFunction object: 0x%016llX", address);
+
+                    auto* slot = reinterpret_cast<void**>(
+                        static_cast<uintptr_t>(address) + kUFunctionFuncOffset);
+
+                    if (!Readable(slot, sizeof(void*)))
+                    {
+                        Log("    UNREADABLE at +0x%zX -- address or offset is wrong",
+                            kUFunctionFuncOffset);
+                        Log("");
+                        line = next;
+                        continue;
+                    }
+
+                    auto func = reinterpret_cast<uintptr_t>(*slot);
+                    const bool in_module = func >= game.base &&
+                                           func < game.base + game.size;
+
+                    Log("    Func:             0x%016llX%s",
+                        static_cast<unsigned long long>(func),
+                        in_module ? "" : "   <-- OUTSIDE the module, offset suspect");
+
+                    if (in_module)
+                    {
+                        Log("    RVA:              0x%08llX",
+                            static_cast<unsigned long long>(func - game.base));
+                    }
+
+                    if (Readable(reinterpret_cast<void*>(func), 32))
+                    {
+                        const auto* code = reinterpret_cast<const unsigned char*>(func);
+                        char hex[3 * 32 + 1]{};
+                        for (int i = 0; i < 32; ++i)
+                        {
+                            sprintf_s(hex + i * 3, 4, "%02X ", code[i]);
+                        }
+                        Log("    first 32 bytes:   %s", hex);
+
+                        /* Not a disassembler, just the two shapes a stripped
+                         * body takes. Anything else is dumped above and read
+                         * off-line, which is where the real answer comes from. */
+                        if (code[0] == 0xC3)
+                        {
+                            Log("    -> immediate ret. STUBBED.");
+                        }
+                        else if (code[0] == 0x33 && code[1] == 0xC0 && code[2] == 0xC3)
+                        {
+                            Log("    -> xor eax,eax; ret. STUBBED.");
+                        }
+                        else
+                        {
+                            Log("    -> has a real body");
+                        }
+                    }
+                    Log("");
+                }
+            }
+            line = next;
+        }
+
+        Log("  Compare SBPlayerBattleState, which works, against");
+        Log("  SBCreateCharacter, which does not. If both have real bodies then");
+        Log("  stripping is not the explanation and the argument handling is.");
+    }
+
     DWORD WINAPI Main(LPVOID)
     {
         LogOpen();
@@ -186,8 +340,37 @@ namespace
         Log("  A Linux-built MSVC-ABI DLL loaded under the installed UE4SS,");
         Log("  ran, and resolved the game module. The delivery mechanism works.");
         Log("");
-        Log("  Nothing is hooked and nothing is patched. Next is an inline hook");
-        Log("  on the anim update, which is the thing Lua provably cannot do.");
+        Log("  Nothing is hooked and nothing is patched.");
+        Log("");
+
+        /* The Lua side writes its targets only once it reaches gameplay, which
+         * is long after this DLL loads, so wait rather than checking once and
+         * reporting a missing file as a finding. */
+        Log("waiting for ue4ss\\SBLove_targets.txt (up to 5 minutes)");
+        for (int attempt = 0; attempt < 150; ++attempt)
+        {
+            wchar_t probe[MAX_PATH]{};
+            if (GetModuleFileNameW(g_self, probe, MAX_PATH))
+            {
+                for (int stripped = 0; stripped < 4; ++stripped)
+                {
+                    wchar_t* slash = wcsrchr(probe, L'\\');
+                    if (slash) *slash = L'\0';
+                }
+                wcscat_s(probe, MAX_PATH, L"\\SBLove_targets.txt");
+                if (GetFileAttributesW(probe) != INVALID_FILE_ATTRIBUTES)
+                {
+                    /* Let the writer finish before reading a partial file. */
+                    Sleep(500);
+                    ReportTargets(game);
+                    return 0;
+                }
+            }
+            Sleep(2000);
+        }
+
+        Log("no targets file appeared. Run the P10 Lua probe:");
+        Log("  ./install.sh probe P10_targets");
         return 0;
     }
 }

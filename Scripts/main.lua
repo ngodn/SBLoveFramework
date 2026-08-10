@@ -108,6 +108,11 @@ local SOLO = {
 --- or FinishSpawningActor. Off until the FTransform marshalling is verified.
 local ALLOW_SPAWN = false
 
+--- How close a character has to be to become the partner. 8 m is close enough
+--- to be deliberate: you walk up to someone rather than triggering on whoever
+--- is across the plaza.
+local PARTNER_RANGE = 800.0
+
 local POLL_MS      = 500
 local SETTLE_TICKS = 14    -- ~7 s, a summon needs time to arrive
 local LEVEL_TICKS  = 20
@@ -318,11 +323,40 @@ local function Tick()
     if Stage == "wait" then
         ReportCast()
         ReportRegistry()
-        Stage, Ticks = "settle", 0
+        if PartnerActor then
+            Stage, Ticks = "settle", 0
+        else
+            Out("")
+            Out("No partner yet. Walk up to a character and the scene starts")
+            Out("by itself. Ctrl+Alt+P runs it solo, Ctrl+Alt+O ends it.")
+            Stage, Ticks = "waiting_for_partner", 0
+        end
         return
     end
 
     Ticks = Ticks + 1
+
+    -- Loading always drops you at a camp, so a scene cannot simply run a few
+    -- seconds after load: you still have to walk to whoever you want. Waiting
+    -- for a partner to appear, and saying so once a minute, is far more usable
+    -- than firing once and giving up before you have arrived.
+    if Stage == "waiting_for_partner" then
+        if not PartnerActor then
+            local nearby = Actors.NearbyCharacters(PARTNER_RANGE)
+            if #nearby > 0 then
+                Partner, PartnerActor = nearby[1].class, nearby[1].actor
+                Out("")
+                Out(string.format("partner found: %s at %.0f cm",
+                    Partner, nearby[1].distance))
+                Stage, Ticks = "settle", 0
+            elseif Ticks % 120 == 0 then
+                Out(string.format("waiting for a humanoid within %.0f m " ..
+                    "(walk up to one, or Ctrl+Alt+P to run solo)",
+                    PARTNER_RANGE / 100))
+            end
+        end
+        return
+    end
 
     if Stage == "settle" then
         -- A summon is not complete when the call returns, so it is collected
@@ -375,7 +409,28 @@ local function Tick()
     end
 end
 
+-- Manual controls. Letters, not function keys: an iPad keyboard has none and
+-- many laptops need an Fn chord.
+pcall(RegisterKeyBind, Key.P, { ModifierKey.CONTROL, ModifierKey.ALT }, function()
+    if Scene.IsActive() then
+        Out("a scene is already running (Ctrl+Alt+O to end it)")
+        return
+    end
+    Out("")
+    Out("manual start requested")
+    Stage, Ticks, Level = StartScene() and "levels" or "done", LEVEL_TICKS, 0
+end)
+
+pcall(RegisterKeyBind, Key.O, { ModifierKey.CONTROL, ModifierKey.ALT }, function()
+    if not Scene.IsActive() then Out("no scene running") return end
+    Scene.Stop()
+    Summon.DismissAll()
+    Out("scene ended, everything restored")
+    Stage, Ticks, Level = "waiting_for_partner", 0, 0
+end)
+
 Out("SBLoveFramework v0.5 -- paired scene test")
+Out("  Ctrl+Alt+P  start a scene now   Ctrl+Alt+O  end it")
 Out("Load a save. Ideally somewhere Lily or Adam is present, such as Xion.")
 
 pcall(LoopAsync, POLL_MS, function()

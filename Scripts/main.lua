@@ -113,6 +113,10 @@ local ALLOW_SPAWN = false
 --- is across the plaza.
 local PARTNER_RANGE = 800.0
 
+--- How far to look when reporting where the nearest person is. Much wider than
+--- the trigger range, because the report is a search aid, not a trigger.
+local SEARCH_RANGE = 6000.0
+
 local POLL_MS      = 500
 local SETTLE_TICKS = 14    -- ~7 s, a summon needs time to arrive
 local LEVEL_TICKS  = 20
@@ -142,6 +146,7 @@ local Partner  = nil
 
 local PartnerActor = nil
 local Pending      = nil     -- an in-flight summon, collected on later ticks
+local LastBucket   = -1      -- distance bucket, so the search log only moves
 
 local function ReportCast()
     Out("")
@@ -342,17 +347,36 @@ local function Tick()
     -- than firing once and giving up before you have arrived.
     if Stage == "waiting_for_partner" then
         if not PartnerActor then
-            local nearby = Actors.NearbyCharacters(PARTNER_RANGE)
-            if #nearby > 0 then
-                Partner, PartnerActor = nearby[1].class, nearby[1].actor
+            -- Scan wide, act narrow. Reporting the nearest humanoid at long
+            -- range turns this into a detector you can walk with, which matters
+            -- in a linear story area with no map and no fast travel, where the
+            -- only way to reach anyone is to find them on foot.
+            local wide = Actors.NearbyCharacters(SEARCH_RANGE)
+
+            if #wide > 0 and wide[1].distance <= PARTNER_RANGE then
+                Partner, PartnerActor = wide[1].class, wide[1].actor
                 Out("")
                 Out(string.format("partner found: %s at %.0f cm",
-                    Partner, nearby[1].distance))
+                    Partner, wide[1].distance))
                 Stage, Ticks = "settle", 0
-            elseif Ticks % 120 == 0 then
-                Out(string.format("waiting for a humanoid within %.0f m " ..
-                    "(walk up to one, or Ctrl+Alt+P to run solo)",
-                    PARTNER_RANGE / 100))
+                return
+            end
+
+            -- Report on change rather than on a clock, so walking toward
+            -- someone gives continuous feedback and standing still stays quiet.
+            local nearest = wide[1]
+            local bucket = nearest and math.floor(nearest.distance / 200) or -1
+            if bucket ~= LastBucket then
+                LastBucket = bucket
+                if nearest then
+                    Out(string.format("nearest humanoid: %s at %.0f m -- " ..
+                        "walk closer, starts within %.0f m",
+                        nearest.class, nearest.distance / 100,
+                        PARTNER_RANGE / 100))
+                else
+                    Out(string.format("no humanoid within %.0f m",
+                        SEARCH_RANGE / 100))
+                end
             end
         end
         return

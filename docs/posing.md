@@ -76,6 +76,28 @@ Worth noting the 4.0 cm is stable across a swap, which suggests the variable
 blends toward a fixed reference pose rather than toward a slot whose contents
 can be replaced.
 
+## Does not work: the hand IK ControlRig
+
+`Enable_R_Hand` at `+0x11191` with a world target in `RightHitLoc` at
+`+0x113FC` looked like the right lever: the same ControlRig as the toe and knee
+IK, and IK would give a natural arm arc instead of guessed joint angles.
+
+It does nothing. Four on/off cycles at `slomo 0.02`, identical to 0.01 cm:
+
+```
+off  (57559.32, -84578.73, 2209.39)
+IK   (57559.33, -84578.73, 2209.39)
+```
+
+The write is not the problem. Reading the property back gives
+`__CustomProperty_Enable_R_Hand_... = true`, so the byte hold lands. The rig
+simply does not respond, which suggests the ControlRig node itself is not being
+evaluated, or that `RightHitLoc` is not its target.
+
+An early single measurement suggested 17 cm of movement. Releasing the hold did
+not revert it, so that was drift. At `slomo 0.02` the idle is slow rather than
+stopped, and a single before-and-after can still catch it.
+
 ## Does not work: ModifyBone pins
 
 Setting `AnimGraphNode_ModifyBone.BoneToModify` and holding `Rotation` and

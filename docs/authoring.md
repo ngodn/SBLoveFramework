@@ -414,3 +414,50 @@ and doing it silently would be the worst of the three options.
 Installed as `~mods/SBLoveAnimTest_P` — 347 byte .pak, 52 KB .ucas, 544 byte
 .utoc. It overrides `Proto_Walk`, so a changed walk is the signal, and removing
 the three files reverses it completely.
+
+## PROVEN: the game loads a hand-built asset
+
+`SequenceLength` was changed from the shipped `1.2` to `7.77`, packed, and read
+back out of the running game:
+
+```
+found /Game/Art/Character/PC/CH_P_EVE_01/Animation/Proto_Walk.Proto_Walk
+  SequenceLength   7.7699999809265
+  NumFrames        37
+```
+
+That single number closes the whole question. The pak mounts, `retoc to-zen`
+produces an asset the game accepts, and edits made with UAssetAPI survive into
+the running game.
+
+### Why a property rather than the animation
+
+Editing the rotation first and looking at her arm was ambiguous, and the arm
+measurement showed nothing: 51 cm clavicle to hand, hand 46 cm below, which is
+an arm hanging at rest. Three explanations fit that equally well:
+
+- the pak never mounted
+- the asset was rejected
+- `Proto_Walk` is a prototype the game never plays
+
+A property Lua can read separates them. `SequenceLength` has no effect on
+whether an animation is used, so reading `7.77` proves the file is loaded
+regardless of whether anything plays it.
+
+Which also means the rotation edit was almost certainly fine, and `Proto_Walk`
+is simply not the walk the game uses. Picking the animation that actually plays
+is now a separate and much smaller problem.
+
+## Pipeline, complete
+
+```
+retoc to-legacy      extract from the shipped paks
+SBAnimTool           decode, edit, re-encode
+retoc to-zen         pack to .utoc/.ucas/.pak
+~mods/               drop in
+sblove asset <path>  confirm from inside the running game
+```
+
+Every stage is verified: the size model against 17 animations, the rotation
+encoder against 206 tracks, a byte-exact round-trip, a contained edit, and now
+the loaded result read back in game.

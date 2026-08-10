@@ -200,6 +200,7 @@ function Commands.help()
     Say("pick <NodeName> | bone <BoneName> | pose <p> <y> <r> [mode] [space]")
     Say("alpha <v> | hold <name|0xOFF> <v> | holds | clear | exec <cmd>")
     Say("swap <animPath> | unswap    upper-body custom slot content")
+    Say("asset <objectPath>          read an AnimSequence's properties")
     Say("holdb <name> <0|1> | holdv <name> <x> <y> <z> | grope [side up fwd]")
     Say("mode: 0 ignore 1 replace 2 additive   space: 0 world 1 comp 2 parent 3 bone")
 end
@@ -507,6 +508,38 @@ end
 function Commands.unswap()
     local restored = Playback.RestoreAllBlendSpaces()
     Say(string.format("restored %s BlendSpace(s)", tostring(restored)))
+end
+
+--- asset <objectPath>   read an AnimSequence's properties from the running game
+---
+--- The point is pak overrides. If a mod pak replaces an asset, the game loads
+--- OUR file, and a property we deliberately changed reads back changed. That
+--- answers "did the pak mount" separately from "does the animation look
+--- different", which otherwise look identical when the asset is one the game
+--- never plays.
+---
+--- LoadAsset is safe on an AnimSequence. It is NOT safe on a character
+--- Blueprint, which crashed the game twice earlier in this project.
+function Commands.asset(path)
+    if not path then
+        Say("usage: asset /Game/Art/Character/PC/CH_P_EVE_01/Animation/Name.Name")
+        return
+    end
+    local object = Try(StaticFindObject, path)
+    if not IsLive(object) then
+        Try(LoadAsset, path)
+        object = Try(StaticFindObject, path)
+    end
+    if not IsLive(object) then
+        Say("not found or not loaded: " .. path)
+        return
+    end
+
+    Say("found " .. path)
+    for _, prop in ipairs({ "SequenceLength", "NumFrames", "RateScale" }) do
+        local value = Try(function() return object[prop] end)
+        Say(string.format("  %-16s %s", prop, tostring(value)))
+    end
 end
 
 function Commands.clear()

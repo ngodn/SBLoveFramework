@@ -204,6 +204,7 @@ function Physics.Apply(instance, preset)
 
     local record = Capture(instance)
     local written = 0
+    Physics.lastMiss = nil     -- reflects this call only
 
     local node, settings = KawaiiSettings(instance)
     if settings ~= nil then
@@ -214,8 +215,23 @@ function Physics.Apply(instance, preset)
             local base = record.kawaii[field]
             local scale = scales[field]
             if type(base) == "number" and type(scale) == "number" then
-                Try(function() settings[field] = base * scale end)
-                written = written + 1
+                local want = base * scale
+                Try(function() settings[field] = want end)
+
+                -- Read back through a FRESH struct fetch, not through the
+                -- local. UE4SS may hand back a copy of a nested struct rather
+                -- than a reference, in which case writes land on the copy and
+                -- vanish. Reading the same local would confirm the write and
+                -- prove nothing, which is exactly the trap that made a scene
+                -- with failed physics report success.
+                local fresh = Try(function() return node.PhysicsSettings end)
+                local got = fresh and Try(function() return fresh[field] end)
+                if type(got) == "number" and math.abs(got - want) < 0.0001 then
+                    written = written + 1
+                else
+                    Physics.lastMiss = string.format(
+                        "%s: wrote %.4f, read back %s", field, want, tostring(got))
+                end
             elseif type(base) == "number" then
                 Try(function() settings[field] = base end)   -- unscaled: reset
             end

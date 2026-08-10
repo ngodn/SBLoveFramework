@@ -148,6 +148,21 @@ local function StartScene()
     else
         Out("  no problems reported at start")
     end
+
+    -- Two different bugs produce the same symptom one tick later, and they need
+    -- different fixes:
+    --   the write never landed          -> this reads the shipped values
+    --   something resets it between now
+    --   and the level 1 report          -> this reads the scaled values
+    -- Reading here, in the same tick as the apply, tells them apart.
+    if Physics.lastMiss then
+        Out("  read-back MISMATCH: " .. Physics.lastMiss)
+    else
+        Out("  all physics writes verified by read-back")
+    end
+    Out("")
+    Out("---- physics: immediately after Scene.Start (expect the level 1 ramp)")
+    Out(Physics.Describe(Instance))
     return true
 end
 

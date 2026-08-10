@@ -130,17 +130,42 @@ end
 
 -- ------------------------------------------------------------------ actors
 
---- The BlendSpace an actor's body is currently playing, plus the anim instance
---- it belongs to.
-local function ResolveTarget(actor)
+--- What an actor's body is currently playing, and how to take it over.
+---
+--- Two kinds of actor need two different routes, and which one applies is a
+--- property of the character rather than a preference:
+---
+---   BLENDSPACE  Eve drives her body from a locomotion BlendSpace, because she
+---               walks, runs and sprints. Every sample in it is replaced.
+---
+---   SEQUENCE    A standing NPC has no locomotion to blend, so its idle comes
+---               straight from a SequencePlayer. There is no BlendSpace with
+---               any weight, and looking only for one reports the character as
+---               unusable when it is perfectly drivable.
+---
+--- BlendSpace is tried first because it covers the whole body. The sequence
+--- route needs two samples a frame apart to tell a genuinely playing node from
+--- a weighted but frozen one, so callers pass the previous sample in.
+local function ResolveTarget(actor, previousSample)
     local instance = Playback.GetAnimInstance(actor)
     if not instance then return nil, "no anim instance" end
 
     local spaces = Playback.FindLiveBlendSpaces(instance)
-    if #spaces == 0 then
-        return nil, "no live blend space (is the character in the world and idle?)"
+    if #spaces > 0 then
+        return { instance = instance, kind = "blendspace", node = spaces[1] }
     end
-    return { instance = instance, node = spaces[1] }
+
+    -- No BlendSpace: fall back to whichever sequence node is actually running.
+    local now = Playback.Sample(instance)
+    if previousSample then
+        local live = Playback.FindLive(previousSample, now, { absoluteOnly = true })
+        if #live > 0 then
+            return { instance = instance, kind = "sequence",
+                     property = live[1].property, node = live[1] }
+        end
+    end
+
+    return nil, "no live blend space or sequence node", now
 end
 
 -- ------------------------------------------------------------------- apply
@@ -159,7 +184,13 @@ local function ApplyCurrentLoop()
         local slot = current.roles[role]
         local path = loop[role]
         if slot and path then
-            local ok, err = Playback.SwapBlendSpace(slot.target.node.blendSpace, path)
+            local ok, err
+            if slot.target.kind == "blendspace" then
+                ok, err = Playback.SwapBlendSpace(slot.target.node.blendSpace, path)
+            else
+                ok, err = Playback.Swap(slot.target.instance,
+                                        slot.target.property, path)
+            end
             if ok then applied = applied + 1
             else failures[#failures + 1] = role .. ": " .. tostring(err) end
         end
@@ -239,13 +270,23 @@ function Scene.Start(definition, actorA, actorB)
         end
     end
 
-    local targetA, errA = ResolveTarget(actorA)
+    -- A sequence node can only be identified from two samples a frame apart,
+    -- so an actor with no BlendSpace needs a second look. Sampling here and
+    -- retrying immediately is enough, because the samples are taken either side
+    -- of the anchor's own resolution.
+    local targetA, errA, sampleA = ResolveTarget(actorA)
+    if not targetA then
+        targetA, errA = ResolveTarget(actorA, sampleA)
+    end
     if not targetA then return false, "anchor: " .. tostring(errA) end
 
     local roles = { A = { actor = actorA, target = targetA } }
 
     if IsLive(actorB) then
-        local targetB, errB = ResolveTarget(actorB)
+        local targetB, errB, sampleB = ResolveTarget(actorB)
+        if not targetB then
+            targetB, errB = ResolveTarget(actorB, sampleB)
+        end
         if not targetB then return false, "partner: " .. tostring(errB) end
         roles.B = { actor = actorB, target = targetB }
     end
@@ -348,9 +389,13 @@ function Scene.Stop()
     if not current then return false, "no scene" end
 
     for _, slot in pairs(current.roles) do
-        if slot.target and slot.target.node then
-            Try(function()
-                Playback.RestoreBlendSpace(slot.target.node.blendSpace) end)
+        if slot.target then
+            if slot.target.kind == "blendspace" and slot.target.node then
+                Try(function()
+                    Playback.RestoreBlendSpace(slot.target.node.blendSpace) end)
+            elseif slot.target.instance then
+                Try(function() Playback.Restore(slot.target.instance) end)
+            end
         end
         if slot.target and slot.target.instance then
             Try(function() Physics.Restore(slot.target.instance) end)

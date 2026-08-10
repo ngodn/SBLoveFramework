@@ -19,7 +19,7 @@ yet exercised with two actors.
 | Piece | State |
 | --- | --- |
 | Animation playback | **working, visually confirmed** |
-| Actor resolution, placement, pairing maths | written |
+| Actor resolution, placement, pairing maths | **working**, alignment exact to the decimal |
 | Scene engine: stages + intensity axis | **working**, solo, measured in game |
 | Secondary motion coupled to intensity | **working**, persists and restores cleanly |
 | Contact colliders | written, untested |
@@ -27,6 +27,24 @@ yet exercised with two actors.
 | Addon registry (`.sblove.json`) | **written**, validation tested offline |
 | Outfit backends (CNS + native) | not started |
 | In-game UI | not started |
+
+## Two-actor scenes: working
+
+Confirmed in game with Eve and Raven in a Boss Challenge arena:
+
+```
+PAIRED: Eve + Raven
+demo.paired  stage 1/1 'facing'  intensity 1/2
+  [A=CH_P_EVE_01_Blueprint_C  B=CH_M_NA_53_Blueprint_C]
+horizontal gap after alignment: 70.0 cm (asked for 70)
+LEVEL 1 / 2  ->  LEVEL 2 / 2  ->  scene stopped, everything restored
+```
+
+Both actors resolved, alignment landed on target to the decimal, the intensity
+axis stepped, and teardown restored everything.
+
+A Boss Challenge turned out to be the right test bed: a guaranteed humanoid in a
+clean arena, reachable without playing through a story section.
 
 ## How playback works
 

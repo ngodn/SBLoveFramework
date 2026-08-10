@@ -69,6 +69,48 @@ local Try, IsLive = Actors.Try, Actors.IsLive
 --- BlendSpace assets and neither could be restored reliably.
 local current = nil
 
+--- Samples taken on earlier ticks, keyed by actor.
+---
+--- Identifying a live sequence node needs two samples A FRAME APART, to tell a
+--- genuinely running node from a weighted but frozen one. Taking both inside
+--- one tick, microseconds apart, leaves the time accumulator unmoved and
+--- nothing ever looks live. That is why a scene failed to start on Eve during
+--- combat, where she has no weighted BlendSpace to fall back on.
+---
+--- So the host samples on the ticks leading up to the start, and the value from
+--- the previous tick is what resolution compares against.
+--- Keyed by OBJECT PATH, not by the actor.
+---
+--- UE4SS hands back a distinct Lua wrapper for the same UObject on every call,
+--- so a table keyed by the actor writes under a new key every tick and reads
+--- back nothing. That is the same trap that once made NearbyCharacters offer
+--- Eve as her own partner, and it silently defeated this sampler too: samples
+--- were being stored every tick and none were ever found again.
+local priorSamples = {}
+
+--- Call once per tick for any actor a scene might use.
+--- Keeps TWO generations, and hands out the older one.
+---
+--- Storing a single sample is not enough, because this runs earlier in the same
+--- tick that starts a scene: the fresh sample overwrites the old one and the
+--- comparison ends up being a frame against itself. Every node then reports
+--- dT = +0.000 and nothing looks alive, which is exactly what the diagnostics
+--- showed: four nodes at weight 1.00 and not one of them counted.
+function Scene.PreSample(actor)
+    if not IsLive(actor) then return end
+    local instance = Playback.GetAnimInstance(actor)
+    if not instance then return end
+
+    local key = Actors.FullName(actor)
+    local slot = priorSamples[key]
+    if not slot then slot = {} priorSamples[key] = slot end
+
+    slot.previous = slot.current
+    slot.current  = Playback.Sample(instance)
+end
+
+function Scene.ClearSamples() priorSamples = {} end
+
 --- Non-fatal problems from the last apply. A scene can start with playback
 --- working and physics failing, and that combination is invisible unless it is
 --- recorded: the run that exposed this bug looked entirely successful.
@@ -146,7 +188,7 @@ end
 --- BlendSpace is tried first because it covers the whole body. The sequence
 --- route needs two samples a frame apart to tell a genuinely playing node from
 --- a weighted but frozen one, so callers pass the previous sample in.
-local function ResolveTarget(actor, previousSample)
+local function ResolveTarget(actor)
     local instance = Playback.GetAnimInstance(actor)
     if not instance then return nil, "no anim instance" end
 
@@ -155,17 +197,81 @@ local function ResolveTarget(actor, previousSample)
         return { instance = instance, kind = "blendspace", node = spaces[1] }
     end
 
-    -- No BlendSpace: fall back to whichever sequence node is actually running.
+    -- No BlendSpace: fall back to whichever sequence node is actually running,
+    -- compared against a sample from an EARLIER TICK.
+    local slot = priorSamples[Actors.FullName(actor)]
+    local earlier = slot and slot.previous
     local now = Playback.Sample(instance)
-    if previousSample then
-        local live = Playback.FindLive(previousSample, now, { absoluteOnly = true })
+
+    -- Preferred: a node that is both weighted and genuinely advancing.
+    if earlier then
+        local live = Playback.FindLive(earlier, now, { absoluteOnly = true })
         if #live > 0 then
             return { instance = instance, kind = "sequence",
                      property = live[1].property, node = live[1] }
         end
     end
 
-    return nil, "no live blend space or sequence node", now
+    -- Fallback: weight alone.
+    --
+    -- A character can hold a static pose with nodes weighted at 1.00 and no
+    -- clock advancing at all, which is what happens in scripted states. The
+    -- advancing check exists to avoid choosing a frozen node when a live one is
+    -- available; when EVERYTHING is frozen it rejects the very node driving the
+    -- pose. Measured in game: four nodes at weight 1.00, every dT exactly
+    -- +0.000, and the pose plainly on screen.
+    local best, bestWeight = nil, 0.001
+    for prop, sample in pairs(now) do
+        local weight = type(sample.weight) == "number" and sample.weight or 0.0
+        if weight > bestWeight
+            and Playback.IsLive(sample.sequence)
+            and Playback.IsAbsolute(sample.sequence) then
+            best, bestWeight = prop, weight
+        end
+    end
+
+    if best then
+        return { instance = instance, kind = "sequence", property = best,
+                 node = { property = best, weight = bestWeight } }
+    end
+
+    return nil, "no usable node" ..
+        Scene.DescribeNodes(instance, earlier)
+end
+
+--- What IS happening on this anim instance, for when resolution fails.
+---
+--- Guessing at these one at a time has cost several rounds. A failure that
+--- names the nodes, their weights and whether their time advanced is worth far
+--- more than one that says "nothing was live".
+function Scene.DescribeNodes(instance, earlier)
+    local now = Playback.Sample(instance)
+    local rows, total = {}, 0
+
+    for prop, sample in pairs(now) do
+        total = total + 1
+        local before = earlier and earlier[prop]
+        local delta = (before and type(sample.time) == "number"
+            and type(before.time) == "number") and (sample.time - before.time) or 0
+        if (sample.weight or 0) > 0.001 or math.abs(delta) > 0.0001 then
+            rows[#rows + 1] = { prop = prop, weight = sample.weight or 0,
+                                delta = delta,
+                                seq = Playback.IsLive(sample.sequence) and
+                                      (Playback.FullName(sample.sequence)
+                                       :match("([^%.]+)$")) or "-" }
+        end
+    end
+
+    table.sort(rows, function(a, b) return a.weight > b.weight end)
+
+    local lines = { string.format(" (%d nodes scanned, %d showing activity)",
+        total, #rows) }
+    for index, row in ipairs(rows) do
+        if index > 6 then break end
+        lines[#lines + 1] = string.format("\n      %-42s w=%.2f dT=%+.3f %s",
+            row.prop, row.weight, row.delta, row.seq)
+    end
+    return table.concat(lines)
 end
 
 -- ------------------------------------------------------------------- apply
@@ -274,19 +380,13 @@ function Scene.Start(definition, actorA, actorB)
     -- so an actor with no BlendSpace needs a second look. Sampling here and
     -- retrying immediately is enough, because the samples are taken either side
     -- of the anchor's own resolution.
-    local targetA, errA, sampleA = ResolveTarget(actorA)
-    if not targetA then
-        targetA, errA = ResolveTarget(actorA, sampleA)
-    end
+    local targetA, errA = ResolveTarget(actorA)
     if not targetA then return false, "anchor: " .. tostring(errA) end
 
     local roles = { A = { actor = actorA, target = targetA } }
 
     if IsLive(actorB) then
-        local targetB, errB, sampleB = ResolveTarget(actorB)
-        if not targetB then
-            targetB, errB = ResolveTarget(actorB, sampleB)
-        end
+        local targetB, errB = ResolveTarget(actorB)
         if not targetB then return false, "partner: " .. tostring(errB) end
         roles.B = { actor = actorB, target = targetB }
     end

@@ -51,13 +51,20 @@
 local Playback = {}
 
 --- Every asset-player node on CH_P_EVE_01_AnimBP_New_C. Derived offline from
+--- the generated header.
+---
+--- AnimGraphNode_RandomPlayer is deliberately absent. It looked like an asset
+--- player but FAnimNode_RandomPlayer has no BlendWeight, so reading one throws
+--- inside UE4SS on every sample: twice a second, for every character, filling
+--- the log and drowning the errors that matter.
+---
+--- Originally derived from
 --- research/CXXHeaderDump/CH_P_EVE_01_AnimBP_New.hpp by selecting properties
 --- whose type descends from FAnimNode_AssetPlayerBase. Other characters have
 --- different graphs; DiscoverNodes below falls back to probing these names and
 --- keeping whatever resolves.
 Playback.NODES = {
     "AnimGraphNode_SequencePlayer_33",
-    "AnimGraphNode_RandomPlayer",
     "AnimGraphNode_SequencePlayer_32",
     "AnimGraphNode_SequencePlayer_31",
     "AnimGraphNode_SequencePlayer_30",
@@ -203,16 +210,30 @@ function Playback.DiscoverNodes(instance)
     return present
 end
 
+--- A reflection read that is guaranteed to be a number, or the fallback.
+---
+--- Reading a property does not guarantee a number back. Some node types hand
+--- back a UObject for BlendWeight, and storing that unchecked meant a later
+--- "weight > 0.001" threw "attempt to compare number with UObject" and took the
+--- whole scene start down with it. Coercing here fixes every comparison at once
+--- rather than guarding each one.
+local function Number(value, fallback)
+    if type(value) == "number" then return value end
+    return fallback
+end
+
 --- One reading of every node's play state.
 function Playback.Sample(instance)
     local snapshot = {}
     for _, prop in ipairs(Playback.DiscoverNodes(instance)) do
         local node = Try(function() return instance[prop] end)
         if node ~= nil then
+            local sequence = Try(function() return node.Sequence end)
             snapshot[prop] = {
-                weight   = Try(function() return node.BlendWeight end) or 0.0,
-                time     = Try(function() return node.InternalTimeAccumulator end),
-                sequence = Try(function() return node.Sequence end),
+                weight   = Number(Try(function() return node.BlendWeight end), 0.0),
+                time     = Number(Try(function()
+                               return node.InternalTimeAccumulator end), nil),
+                sequence = IsLive(sequence) and sequence or nil,
             }
         end
     end
@@ -266,12 +287,13 @@ function Playback.FindLive(before, after, opts)
         if a then
             local moving = type(b.time) == "number" and type(a.time) == "number"
                 and math.abs(b.time - a.time) > 0.0001
-            if b.weight > minWeight and moving and IsLive(b.sequence) then
+            local weight = type(b.weight) == "number" and b.weight or 0.0
+            if weight > minWeight and moving and IsLive(b.sequence) then
                 local additive = Playback.AdditiveTypeOf(b.sequence)
                 if not opts.absoluteOnly or additive == Playback.ADDITIVE_NONE then
                     live[#live + 1] = {
                         property = prop,
-                        weight   = b.weight,
+                        weight   = weight,
                         delta    = b.time - a.time,
                         sequence = b.sequence,
                         additive = additive,

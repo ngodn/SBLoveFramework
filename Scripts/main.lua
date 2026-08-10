@@ -58,7 +58,10 @@ local EVE = "/Game/Art/Character/PC/CH_P_EVE_01/Animation/"
 --- Candidate partners, most interesting first. Raven is included because if she
 --- ever IS present the pairing should be tried, but she is a boss so absence is
 --- the normal answer.
-local PARTNERS = { "Lily", "Adam", "Tachy", "Drone", "Raven" }
+--- Named characters worth pairing with. Drone is deliberately absent: it is
+--- in the actor registry so it can be resolved, but it is a machine, and it
+--- got picked as a partner in a Raven boss challenge purely by being listed.
+local PARTNERS = { "Raven", "Lily", "Adam", "Tachy" }
 
 --- Alias and expected class for characters we can try to summon. Aliases are
 --- CharacterTable row names; classes come from CharacterAppearanceTable's
@@ -294,7 +297,14 @@ local function StartScene()
         Out("  Load a save somewhere populated and rerun to test pairing.")
     end
 
-    local ok, err = Scene.Start(definition, eve, partnerActor)
+    -- pcall, not a bare call. A throw inside Scene.Start previously produced
+    -- no output at all and the caller simply retried every tick, printing
+    -- "PAIRED" thirty times with no explanation anywhere in this log.
+    local called, ok, err = pcall(Scene.Start, definition, eve, partnerActor)
+    if not called then
+        Out("  scene THREW: " .. tostring(ok))
+        return false
+    end
     if not ok then
         Out("  scene failed to start: " .. tostring(err))
         return false
@@ -353,6 +363,14 @@ local function Tick()
 
     Scene.Tick()
 
+    -- Keep a rolling sample of everyone a scene might use. Resolution compares
+    -- against the previous TICK's sample, so this has to run before the scene
+    -- starts, not during it.
+    if not Scene.IsActive() then
+        Scene.PreSample(pawn)
+        if PartnerActor then Scene.PreSample(PartnerActor) end
+    end
+
     if Stage == "wait" then
         ReportCast()
         ReportRegistry()
@@ -375,6 +393,23 @@ local function Tick()
     -- than firing once and giving up before you have arrived.
     if Stage == "waiting_for_partner" then
         if not PartnerActor then
+            -- Named characters first, and re-checked every tick rather than
+            -- only on entry. A boss arrives after the scene has already started
+            -- waiting, and the sweep below deliberately excludes CH_M_ classes,
+            -- so a humanoid boss like Raven would otherwise never be seen at
+            -- all: she is CH_M_NA_53, filed under Monster despite being a
+            -- person. Asking for her by name is the right way round.
+            for _, name in ipairs(PARTNERS) do
+                local actor = Actors.Resolve(name)
+                if actor then
+                    Partner, PartnerActor = name, actor
+                    Out("")
+                    Out("partner arrived: " .. name)
+                    Stage, Ticks = "settle", 0
+                    return
+                end
+            end
+
             -- Scan wide, act narrow. Reporting the nearest humanoid at long
             -- range turns this into a detector you can walk with, which matters
             -- in a linear story area with no map and no fast travel, where the

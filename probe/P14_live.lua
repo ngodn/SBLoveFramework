@@ -118,6 +118,9 @@ local Pose = { pitch = 0, yaw = 0, roll = 0, mode = 2, space = 3, alpha = 1.0 }
 --- the window between and is gone before it matters. The variable is the thing
 --- worth holding. Which variable feeds which node is not in the dump, so it
 --- has to be found by trying them, which is what this is for.
+--- offset -> { value, width }. Width 1 means a single byte, which anim-BP
+--- bools are: Enable_R_Hand at +0x11191 sits directly against Enable_L_Hand at
+--- +0x11192, so a 4-byte write over one clobbers three neighbours.
 local Holds = {}
 
 local function Instance()
@@ -163,8 +166,9 @@ local function PushPose()
     file:write(string.format(
         "pose=0x%X pitch=%.2f yaw=%.2f roll=%.2f mode=%d space=%d\n",
         address + offset, Pose.pitch, Pose.yaw, Pose.roll, Pose.mode, Pose.space))
-    for off, value in pairs(Holds) do
-        file:write(string.format("hold=0x%X %.4f\n", off, value))
+    for off, entry in pairs(Holds) do
+        file:write(string.format("hold=0x%X %.4f %d\n", off, entry.value,
+            entry.width or 4))
     end
     file:close()
     return true
@@ -196,6 +200,7 @@ function Commands.help()
     Say("pick <NodeName> | bone <BoneName> | pose <p> <y> <r> [mode] [space]")
     Say("alpha <v> | hold <name|0xOFF> <v> | holds | clear | exec <cmd>")
     Say("swap <animPath> | unswap    upper-body custom slot content")
+    Say("holdb <name> <0|1> | holdv <name> <x> <y> <z> | grope [side up fwd]")
     Say("mode: 0 ignore 1 replace 2 additive   space: 0 world 1 comp 2 parent 3 bone")
 end
 
@@ -341,6 +346,13 @@ end
 --- node and that is not documented anywhere.
 local NAMED = {
     ikalpharight        = 0x113AC,
+    enablerhand         = 0x11191,
+    enablelhand         = 0x11192,
+    righthitloc         = 0x113FC,
+    lefthitloc          = 0x11408,
+    lookatlocation      = 0x1141C,
+    tpshandsocket       = 0x112D8,
+    targetsocketloc     = 0x11198,
     ikalphaleft         = 0x113A8,
     handikright         = 0x11CBC,   -- EventMoveIKAlpha_Hand_R
     handikleft          = 0x11CB8,   -- EventMoveIKAlpha_Hand_L
@@ -376,16 +388,81 @@ function Commands.hold(what, value)
 
     local offset = NAMED[what:lower()] or tonumber(what)
     if not offset then Say("unknown: " .. what) return end
-    Holds[offset] = tonumber(value) or 1.0
+    Holds[offset] = { value = tonumber(value) or 1.0, width = 4 }
     local ok, err = PushPose()
-    Say(string.format("hold +0x%X = %.3f -> %s", offset, Holds[offset],
+    Say(string.format("hold +0x%X = %.3f -> %s", offset, Holds[offset].value,
         ok and "handed to native" or tostring(err)))
+end
+
+--- holdb <offset> <0|1>   hold a single byte, for anim-BP bools
+function Commands.holdb(what, value)
+    if not what then Say("usage: holdb <name|0xOFFSET> <0|1>") return end
+    local offset = NAMED[what:lower()] or tonumber(what)
+    if not offset then Say("unknown: " .. what) return end
+    Holds[offset] = { value = tonumber(value) or 1.0, width = 1 }
+    local ok, err = PushPose()
+    Say(string.format("holdb +0x%X = %d -> %s", offset,
+        Holds[offset].value ~= 0 and 1 or 0,
+        ok and "handed to native" or tostring(err)))
+end
+
+--- holdv <offset> <x> <y> <z>   an FVector is three consecutive floats, so
+--- this needs no new native support.
+function Commands.holdv(what, x, y, z)
+    if not what or not z then Say("usage: holdv <name|0xOFFSET> <x> <y> <z>") return end
+    local offset = NAMED[what:lower()] or tonumber(what)
+    if not offset then Say("unknown: " .. what) return end
+    Holds[offset]     = { value = tonumber(x) or 0, width = 4 }
+    Holds[offset + 4] = { value = tonumber(y) or 0, width = 4 }
+    Holds[offset + 8] = { value = tonumber(z) or 0, width = 4 }
+    local ok, err = PushPose()
+    Say(string.format("holdv +0x%X = (%.1f, %.1f, %.1f) -> %s", offset,
+        tonumber(x), tonumber(y), tonumber(z),
+        ok and "handed to native" or tostring(err)))
+end
+
+--- grope [side] [up] [forward]   aim the hand IK at her own chest
+---
+--- The ControlRig gated by Enable_R_Hand takes a WORLD position in
+--- RightHitLoc, which is how the game puts a hand on a wall or ledge. Feeding
+--- it a point on her own chest is the same operation with a different target.
+---
+--- The target is computed from Bip001-Spine2 rather than hardcoded, because a
+--- world position is only meaningful relative to where she is standing.
+function Commands.grope(side, up, forward)
+    local sx, sy, sz = Where("Bip001-Spine2")
+    if not sx then Say("cannot read Bip001-Spine2") return end
+
+    local dside    = tonumber(side)    or 8.0
+    local dup      = tonumber(up)      or 6.0
+    local dforward = tonumber(forward) or 12.0
+
+    -- Offsets are applied in world axes, which is only correct while she faces
+    -- a fixed direction. Good enough to find the pose; a real scene has to
+    -- build this in her own frame.
+    local tx = sx + dforward
+    local ty = sy + dside
+    local tz = sz + dup
+
+    Holds[0x11191] = { value = 1.0, width = 1 }          -- Enable_R_Hand
+    Holds[0x113FC] = { value = tx, width = 4 }           -- RightHitLoc.X
+    Holds[0x11400] = { value = ty, width = 4 }
+    Holds[0x11404] = { value = tz, width = 4 }
+    local ok, err = PushPose()
+
+    Say(string.format("spine2 (%.1f, %.1f, %.1f)", sx, sy, sz))
+    Say(string.format("target (%.1f, %.1f, %.1f)  side %+.1f up %+.1f fwd %+.1f",
+        tx, ty, tz, dside, dup, dforward))
+    Say("Enable_R_Hand held, RightHitLoc held -> " ..
+        (ok and "handed to native" or tostring(err)))
+    Say("if the hand does not move, this rig is not the one that places hands")
 end
 
 function Commands.holds()
     local n = 0
-    for off, v in pairs(Holds) do
-        Say(string.format("  +0x%05X = %.3f", off, v))
+    for off, entry in pairs(Holds) do
+        Say(string.format("  +0x%05X = %.3f (%s)", off, entry.value,
+            (entry.width == 1) and "byte" or "float"))
         n = n + 1
     end
     if n == 0 then Say("  nothing held") end

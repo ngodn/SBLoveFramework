@@ -84,8 +84,13 @@ namespace Hooks
      * and which variable that is has to be found by experiment. */
     struct Hold
     {
-        float* address = nullptr;
+        void* address = nullptr;
         float value = 0.0f;
+        /* 4 = float, 1 = byte. Bools in an anim BP are single bytes packed
+         * beside other bools, so writing a float over one would clobber its
+         * three neighbours. Enable_R_Hand at +0x11191 sits directly against
+         * Enable_L_Hand at +0x11192. */
+        uint8_t width = 4;
     };
 
     void SetHolds(const Hold* holds, int count, LogFunc log);

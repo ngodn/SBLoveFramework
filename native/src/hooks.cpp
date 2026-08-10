@@ -197,7 +197,17 @@ namespace
             const long count = g_hold_count;
             for (long i = 0; i < count; ++i)
             {
-                if (g_holds[i].address) *g_holds[i].address = g_holds[i].value;
+                auto& hold = g_holds[i];
+                if (!hold.address) continue;
+                if (hold.width == 1)
+                {
+                    *static_cast<uint8_t*>(hold.address) =
+                        hold.value != 0.0f ? 1 : 0;
+                }
+                else
+                {
+                    *static_cast<float*>(hold.address) = hold.value;
+                }
             }
             if (count > 0) InterlockedIncrement(&g_hold_writes);
         }
@@ -484,9 +494,9 @@ namespace Hooks
             count == 1 ? "" : "s");
         for (int i = 0; i < count; ++i)
         {
-            log("  0x%016llX = %.3f",
+            log("  0x%016llX = %.3f (%s)",
                 reinterpret_cast<unsigned long long>(holds[i].address),
-                holds[i].value);
+                holds[i].value, holds[i].width == 1 ? "byte" : "float");
         }
     }
 

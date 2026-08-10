@@ -233,13 +233,14 @@ namespace
             const char* scan = buffer;
             while (count < 24 && (scan = strstr(scan, "hold=")) != nullptr)
             {
-                unsigned off = 0;
+                unsigned off = 0, width = 4;
                 float v = 0.0f;
-                if (sscanf_s(scan, "hold=0x%x %f", &off, &v) == 2)
+                if (sscanf_s(scan, "hold=0x%x %f %u", &off, &v, &width) >= 2)
                 {
-                    holds[count].address = reinterpret_cast<float*>(
+                    holds[count].address = reinterpret_cast<void*>(
                         static_cast<uintptr_t>(instance) + off);
                     holds[count].value = v;
+                    holds[count].width = static_cast<uint8_t>(width == 1 ? 1 : 4);
                     ++count;
                 }
                 scan += 5;

@@ -247,6 +247,16 @@ pcall(LoopAsync, POLL_MS, function()
     return false
 end)
 
+--- The anim blueprint rewrites KawaiiPhysics and AnimGraphNode_SpringBone every
+--- frame from its exposed pins, so a single write to those survives one frame
+--- and no longer. This re-asserts them. The other 26 spring chains are not
+--- graph-driven and are deliberately not touched here, which keeps this to a
+--- handful of float writes.
+pcall(LoopAsync, 16, function()
+    ExecuteInGameThread(Physics.SustainAll)
+    return false
+end)
+
 pcall(RegisterOnUnloadCallback or function() end, function()
     Try(function() Scene.Stop() end)
     Try(function() Playback.RestoreEverything() end)

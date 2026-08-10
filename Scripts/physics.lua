@@ -88,6 +88,40 @@ Physics.SPRING_NODES = (function()
     return list
 end)()
 
+--[[
+    VOLATILE VERSUS PERSISTENT NODES
+
+    An anim blueprint copies its exposed pins onto node properties every frame,
+    through generated EvaluateGraphExposedInputs functions. Any node with one of
+    those has its properties rewritten each update, so a value written from Lua
+    survives until the next frame and no longer.
+
+    This was measured the hard way. A physics write read back correctly in the
+    same tick and had reverted to the shipped value one tick later, which made
+    an entire intensity ramp look verified when nothing had reached the screen.
+
+    Reading CH_P_EVE_01_AnimBP_New.hpp, exactly two physics nodes are driven:
+
+        AnimGraphNode_KawaiiPhysics
+        AnimGraphNode_SpringBone       (the unsuffixed one, 1 of 27)
+
+    The remaining 26 spring chains, _1 through _26, have no exposed inputs, so
+    writes to them persist. That is most of the control surface, and it is why
+    the framework leans on spring chains rather than on KawaiiPhysics.
+
+    Volatile nodes still work, but only if the value is rewritten every frame.
+    Physics.Sustain does that. It is a race against the graph rather than a
+    guarantee, so anything relying on it says so.
+--]]
+Physics.VOLATILE_NODES = {
+    ["AnimGraphNode_KawaiiPhysics"] = true,
+    ["AnimGraphNode_SpringBone"]    = true,
+}
+
+function Physics.IsVolatile(property)
+    return Physics.VOLATILE_NODES[property] == true
+end
+
 --- Fields scaled on the KawaiiPhysics PhysicsSettings struct.
 local KAWAII_FIELDS = {
     "Damping", "Stiffness", "WorldDampingLocation", "WorldDampingRotation",
@@ -148,6 +182,10 @@ Physics.PRESETS = {
 --- { [instance] = { kawaii = {field=value}, springs = { [prop] = {field=value} } } }
 local originals = setmetatable({}, { __mode = "k" })
 
+--- What the last Apply asked for, so Sustain can re-assert the volatile nodes
+--- each frame. Declared here because Apply, below, writes to it.
+local wanted = setmetatable({}, { __mode = "k" })
+
 local function KawaiiSettings(instance)
     local node = Try(function() return instance[Physics.KAWAII_NODE] end)
     if node == nil then return nil, nil end
@@ -205,6 +243,7 @@ function Physics.Apply(instance, preset)
     local record = Capture(instance)
     local written = 0
     Physics.lastMiss = nil     -- reflects this call only
+    wanted[instance] = scales  -- so Sustain can re-assert the volatile nodes
 
     local node, settings = KawaiiSettings(instance)
     if settings ~= nil then
@@ -257,7 +296,53 @@ function Physics.Apply(instance, preset)
     return true, written
 end
 
+--- Re-assert the values the graph overwrites. Call once per frame.
+---
+--- Only touches the two graph-driven nodes; the other 26 spring chains keep
+--- what they were given and are deliberately skipped, so this stays cheap.
+---
+--- This is a race, not a guarantee. If the graph's copy runs after this in a
+--- given frame, that frame keeps the shipped value. In practice it wins often
+--- enough to be visible, but a design that needs certainty should use the
+--- persistent chains instead.
+function Physics.Sustain(instance)
+    local scales = wanted[instance]
+    if not scales or not IsLive(instance) then return false end
+
+    local record = originals[instance]
+    if not record then return false end
+
+    local node, settings = KawaiiSettings(instance)
+    if settings ~= nil then
+        for _, field in ipairs(KAWAII_FIELDS) do
+            local base, scale = record.kawaii[field], scales[field]
+            if type(base) == "number" and type(scale) == "number" then
+                Try(function() settings[field] = base * scale end)
+            end
+        end
+    end
+
+    local spring = Try(function() return instance["AnimGraphNode_SpringBone"] end)
+    local base = record.springs["AnimGraphNode_SpringBone"]
+    if spring ~= nil and base then
+        for _, field in ipairs(SPRING_FIELDS) do
+            local original, scale = base[field], scales[field]
+            if type(original) == "number" and type(scale) == "number" then
+                Try(function() spring[field] = original * scale end)
+            end
+        end
+    end
+    return true
+end
+
+function Physics.SustainAll()
+    for instance in pairs(wanted) do
+        if IsLive(instance) then Physics.Sustain(instance) end
+    end
+end
+
 function Physics.Restore(instance)
+    wanted[instance] = nil
     local record = originals[instance]
     if not record or not IsLive(instance) then return false end
 

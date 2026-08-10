@@ -213,6 +213,22 @@ function Summon.ClassPath(assetPath)
     return assetPath .. "." .. name .. "_C"
 end
 
+--[[
+    NEVER CALL LoadAsset ON A CHARACTER BLUEPRINT.
+
+    It crashes the game. Measured twice: the log stops mid-function with no
+    error, once with spawning enabled and once with spawning disabled, which
+    rules out the spawn calls and leaves only this.
+
+    LoadAsset on an AnimSequence is fine and the framework relies on it. A
+    character Blueprint is different in kind: it drags in its whole dependency
+    graph, meshes, anim blueprint, materials, physics assets, synchronously on
+    the game thread.
+
+    So this only ever LOOKS UP a class that is already loaded. If the class is
+    not loaded, the answer is that the character cannot be summoned, which is
+    the same practical limit as it not being in the world.
+--]]
 function Summon.LoadClass(assetPath)
     local classPath = Summon.ClassPath(assetPath)
     if not classPath then return nil, "malformed asset path: " .. tostring(assetPath) end
@@ -220,19 +236,7 @@ function Summon.LoadClass(assetPath)
     local class = Try(StaticFindObject, classPath)
     if IsLive(class) then return class end
 
-    -- Loading the package registers its generated class.
-    if type(LoadAsset) == "function" then
-        Try(LoadAsset, assetPath)
-        class = Try(StaticFindObject, classPath)
-        if IsLive(class) then return class end
-
-        -- Some builds want the package's own object path to load.
-        local name = assetPath:match("([^/]+)$")
-        Try(LoadAsset, assetPath .. "." .. name)
-        class = Try(StaticFindObject, classPath)
-        if IsLive(class) then return class end
-    end
-    return nil, "class not found: " .. classPath
+    return nil, "class is not loaded (loading it would crash the game)"
 end
 
 --- Everything that can be checked WITHOUT spawning anything.

@@ -132,6 +132,21 @@ SBAnimGraphNode_SequenceBlendedPlayer_5   CustomAnimNode1_Upper
 and a few seconds later the same object no longer works, because nothing holds a
 reference. Load and assign in the same breath; never preload into a cache.
 
+**`LoadAsset` on a character Blueprint crashes the game.** Measured twice, with
+the log stopping mid-function and no error written. On an `AnimSequence` it is
+completely safe and the framework depends on it. A character Blueprint is
+different in kind: it drags in its whole dependency graph, meshes, anim
+blueprint, materials and physics assets, synchronously on the game thread.
+
+Consequence: a character class can only be *looked up* with `StaticFindObject`,
+never loaded. If the class is not already resident, that character cannot be
+summoned, which is the same practical limit as it not being in the world.
+
+**Summoning absent characters is therefore not available.** `SBCreateCharacter`
+on `USBCheatManager` is inert (verified by counting instances before and after:
+no throw, zero spawned), and the engine route cannot load a class that is not
+already there. Pairing uses characters that already exist nearby.
+
 **The Lobby is not gameplay.** The main menu builds a fully valid player pawn in
 a level named `Lobby`. Every check passes there and every answer is worthless.
 Gate on the pawn's object path, structurally.

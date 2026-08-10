@@ -21,7 +21,7 @@ WIN64="$SB_DIR/SB/Binaries/Win64"
 TARGET="$WIN64/ue4ss/Mods/SBLoveNative"
 SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD="$SOURCE/build"
-LOG="$WIN64/ue4ss/SBLoveNative.txt"
+LOG="$TARGET/SBLoveNative.txt"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 

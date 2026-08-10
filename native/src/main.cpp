@@ -46,32 +46,72 @@
 #include <psapi.h>
 
 #include <cstdarg>
+#include <cwchar>
 #include <cstdio>
 #include <cstdint>
 
 namespace
 {
-    constexpr const char* kLogPath = "ue4ss\\SBLoveNative.txt";
     constexpr const char* kVersion = "SBLoveNative milestone 1";
 
-    FILE* g_log = nullptr;
+    HMODULE g_self = nullptr;
+    HANDLE g_log = INVALID_HANDLE_VALUE;
 
+    /* The log path is absolute and derived from where this DLL actually is,
+     * never relative to the working directory.
+     *
+     * The first attempt used the relative path "ue4ss\SBLoveNative.txt" on the
+     * assumption that the process working directory was Binaries\Win64, which
+     * is where the Lua side's files land. It is not: UE4SS reports its working
+     * directory as Binaries\Win64\ue4ss, so the path resolved into a directory
+     * that does not exist, fopen failed, and every subsequent log call silently
+     * did nothing. The DLL had loaded and run correctly the whole time.
+     *
+     * This DLL lives at <mod>\dlls\main.dll, so stripping two components lands
+     * on the mod folder. */
     void LogOpen()
     {
-        fopen_s(&g_log, kLogPath, "w");
+        wchar_t path[MAX_PATH]{};
+        if (!GetModuleFileNameW(g_self, path, MAX_PATH)) return;
+
+        /* strip "main.dll", then strip "dlls" */
+        for (int stripped = 0; stripped < 2; ++stripped)
+        {
+            wchar_t* slash = wcsrchr(path, L'\\');
+            if (!slash) return;
+            *slash = L'\0';
+        }
+
+        if (wcscat_s(path, MAX_PATH, L"\\SBLoveNative.txt") != 0) return;
+
+        g_log = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     }
 
     void Log(const char* format, ...)
     {
+        char line[1024];
+
         va_list args;
         va_start(args, format);
-        if (g_log)
-        {
-            vfprintf(g_log, format, args);
-            fputc('\n', g_log);
-            fflush(g_log);
-        }
+        int written = vsnprintf(line, sizeof(line) - 2, format, args);
         va_end(args);
+
+        if (written < 0) return;
+        line[written++] = '\n';
+        line[written] = '\0';
+
+        /* Always emit to the debugger stream as well. If the file could not be
+         * opened, this is the only way the failure is visible at all, and a
+         * silent logger is precisely what cost the last run. */
+        OutputDebugStringA(line);
+
+        if (g_log != INVALID_HANDLE_VALUE)
+        {
+            DWORD ignored = 0;
+            WriteFile(g_log, line, static_cast<DWORD>(written), &ignored, nullptr);
+            FlushFileBuffers(g_log);
+        }
     }
 
     /* The game's own module, which is where every offset in
@@ -171,6 +211,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH)
     {
+        g_self = module;
         DisableThreadLibraryCalls(module);
         /* Real work goes on its own thread. Doing it inside DllMain runs under
          * the loader lock, where almost everything interesting deadlocks. */

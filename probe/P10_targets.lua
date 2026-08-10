@@ -54,15 +54,31 @@ local POLL_MS     = 1000
 
 --- Functions to locate. Verdict records what is already known about each, so
 --- the native report can be read against expectations instead of in a vacuum.
-local WANTED = {
-    { name = "SBPlayerBattleState",    verdict = "WORKS (probe_v13)" },
-    { name = "SBCreateCharacter",      verdict = "DOES NOTHING (P9)" },
-    { name = "SBChangeWorld",          verdict = "untested" },
-    { name = "SBGameOptionHUDVisible", verdict = "untested" },
-    { name = "SBPlayCustomAnimByTag",  verdict = "untested" },
-}
+local CHEATS   = "/Script/SB.SBCheatManager"
+local KISMET   = "/Script/Engine.KismetSystemLibrary"
+local GAMEPLAY = "/Script/Engine.GameplayStatics"
 
-local CLASS_PATH = "/Script/SB.SBCheatManager"
+local WANTED = {
+    -- The controls. These are KNOWN to work: P9 changed the game's time rate
+    -- through ExecuteConsoleCommand and read its clock through
+    -- GetGameTimeInSeconds. Their disassembly is what a live exec thunk looks
+    -- like in THIS binary, which is the only fair comparison.
+    --
+    -- The first run had no such control. It used SBPlayerBattleState on the
+    -- strength of probe_v13 reporting it fired, and that reading is now
+    -- suspect: SBPlayerBattleState and SBGameOptionHUDVisible share one
+    -- folded implementation, and two different cheats can only be byte
+    -- identical if neither has a body.
+    { class = KISMET,   name = "ExecuteConsoleCommand", verdict = "CONTROL, works (P9)" },
+    { class = GAMEPLAY, name = "GetTimeSeconds",        verdict = "CONTROL, works (P9)" },
+
+    -- The subjects.
+    { class = CHEATS, name = "SBCreateCharacter",      verdict = "does nothing (P9)" },
+    { class = CHEATS, name = "SBChangeWorld",          verdict = "mode engine depends on it" },
+    { class = CHEATS, name = "SBPlayCustomAnimByTag",  verdict = "mode engine depends on it" },
+    { class = CHEATS, name = "SBPlayerBattleState",    verdict = "folded with HUDVisible" },
+    { class = CHEATS, name = "SBGameOptionHUDVisible", verdict = "folded with BattleState" },
+}
 
 -- --------------------------------------------------------------------- io
 
@@ -94,10 +110,10 @@ end
 --- separators are tried because getting this wrong returns nil, which looks
 --- exactly like "the function does not exist" and would be a misleading answer
 --- to the actual question.
-local function FindFunction(name)
+local function FindFunction(class, name)
     local paths = {
-        CLASS_PATH .. ":" .. name,
-        CLASS_PATH .. "." .. name,
+        class .. ":" .. name,
+        class .. "." .. name,
     }
     for _, path in ipairs(paths) do
         local object = Try(StaticFindObject, path)
@@ -124,7 +140,7 @@ local function Collect()
     Out("################ COLLECTING UFUNCTIONS ################")
 
     for _, entry in ipairs(WANTED) do
-        local object, path = FindFunction(entry.name)
+        local object, path = FindFunction(entry.class, entry.name)
         if not object then
             Out(string.format("  %-24s NOT FOUND", entry.name))
             missing = missing + 1

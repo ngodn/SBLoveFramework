@@ -273,9 +273,36 @@ namespace Hooks
         return InterlockedCompareExchange(&g_change_world_calls, 0, 0);
     }
 
+    /* Installed once. Every later handoff only updates values.
+     *
+     * The first version called MH_CreateHook on every re-read. The second call
+     * fails with "already created", so the function returned false and the
+     * caller never reached HoldPose. Only the first pose after startup ever
+     * applied and every later one was dropped in silence, which looked exactly
+     * like the pose mechanism not working. */
+    bool g_process_event_hooked = false;
+
     bool HoldAnimAlpha(uintptr_t module_base, LogFunc log,
                        void* anim_instance, uint32_t alpha_offset, float value)
     {
+        /* A null instance releases the hold: the detour matches on pointer
+         * equality, so nothing can ever equal null. */
+        if (anim_instance == nullptr)
+        {
+            g_anim_instance = nullptr;
+            g_pose.node = nullptr;
+            log("hold released");
+            return true;
+        }
+
+        if (g_process_event_hooked)
+        {
+            g_anim_instance = anim_instance;
+            g_alpha_offset = alpha_offset;
+            g_alpha_value = value;
+            return true;
+        }
+
         const auto target = module_base + kProcessEventRva;
 
         log("holding CustomAnimAlpha");
@@ -364,6 +391,7 @@ namespace Hooks
             return false;
         }
 
+        g_process_event_hooked = true;
         log("  ProcessEvent hooked; alpha is re-asserted after every event");
         return true;
     }

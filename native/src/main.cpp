@@ -196,6 +196,16 @@ namespace
         unsigned long long instance = 0;
         unsigned offset = 0;
         float value = 1.0f;
+        /* An explicit release, so `clear` actually stops the hold. Without
+         * this the parse simply failed and the previous pose kept being
+         * re-asserted forever. */
+        if (strstr(buffer, "cleared") != nullptr)
+        {
+            Hooks::HoldAnimAlpha(game.base, Log, nullptr, 0, 0.0f);
+            Hooks::ClearPose();
+            return true;
+        }
+
         if (sscanf_s(buffer, "instance=0x%llx offset=0x%x value=%f",
                      &instance, &offset, &value) < 2)
         {

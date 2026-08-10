@@ -64,9 +64,12 @@ local PARTNERS = { "Lily", "Adam", "Tachy", "Drone", "Raven" }
 --- CharacterTable row names; classes come from CharacterAppearanceTable's
 --- CharacterAssetPath with "_C" appended. See docs/character-map.md.
 local SUMMONABLE = {
-    { name = "Lily",  alias = "N_Lily",     class = "CH_NPC_01_Blueprint_C"      },
-    { name = "Adam",  alias = "N_Adam",     class = "CH_NPC_Adam_01_Blueprint_C" },
-    { name = "Tachy", alias = "N_TachyNPC", class = "CH_NPC_TachyNPC_Blueprint_C"},
+    { name = "Lily",  alias = "N_Lily",     class = "CH_NPC_01_Blueprint_C",
+      asset = "/Game/Art/Character/NPC/CH_NPC_01/Blueprints/CH_NPC_01_Blueprint" },
+    { name = "Adam",  alias = "N_Adam",     class = "CH_NPC_Adam_01_Blueprint_C",
+      asset = "/Game/Art/Character/NPC/CH_NPC_Adam_01/Blueprints/CH_NPC_Adam_01_Blueprint" },
+    { name = "Tachy", alias = "N_TachyNPC", class = "CH_NPC_TachyNPC_Blueprint_C",
+      asset = "/Game/Art/Character/NPC/CH_NPC_TachyNPC/Blueprints/CH_NPC_TachyNPC_Blueprint" },
 }
 
 --- Built in so the run does not depend on an addon being installed. Same shape
@@ -156,21 +159,37 @@ local function ReportCast()
     if not Partner then
         Out("")
         Out("################ SUMMONING ################")
+
+        -- Engine spawn first. SBCreateCharacter was measured inert in game:
+        -- the call does not throw and zero instances appear. That is the second
+        -- USBCheatManager function found stripped, so it is no longer the
+        -- preferred route.
         for _, entry in ipairs(SUMMONABLE) do
-            local ok, result = Summon.Character(entry.alias, entry.class,
+            local actor, err = Summon.SpawnClass(entry.asset,
                 { forward = 200, yaw = 180 })
-            if ok then
-                Out(string.format("  requested %s (%s), checking if it arrives",
-                    entry.name, entry.alias))
-                Pending = result
-                Pending.name = entry.name
-                break
+            if actor then
+                local usable, detail = Summon.Inspect(actor)
+                Out(string.format("  SPAWNED %s via engine: %s",
+                    entry.name, tostring(detail)))
+                if usable then
+                    Partner, PartnerActor = entry.name, actor
+                    break
+                end
+                Out("    but it is not usable, dismissing it")
+                Summon.DismissAll()
+            else
+                Out(string.format("  %-6s engine spawn failed: %s",
+                    entry.name, tostring(err)))
             end
-            Out(string.format("  %-6s could not be requested: %s",
-                entry.name, tostring(result)))
         end
-        if not Pending then
-            Out("  no summon route available")
+
+        -- Cheat manager route, kept only to confirm it stays dead.
+        if not Partner then
+            local ok, result = Summon.Character("N_Lily",
+                "CH_NPC_01_Blueprint_C", { forward = 200, yaw = 180 })
+            Out("  cheat-manager route: " ..
+                (ok and "called, checking" or tostring(result)))
+            if ok then Pending = result Pending.name = "Lily" end
         end
     end
 

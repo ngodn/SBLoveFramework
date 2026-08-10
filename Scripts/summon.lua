@@ -162,6 +162,130 @@ function Summon.Collect(pending)
     return best, bestDistance
 end
 
+-- ------------------------------------------------------- engine spawn route
+
+--[[
+    SBCreateCharacter is dead. Tested in game: the call does not throw and
+    exactly zero instances appear, verified by counting before and after. That
+    is the second USBCheatManager function measured inert, after SBPlayerUseSkill
+    in a previous project, so the stripped-bodies conclusion now looks like a
+    property of the whole class rather than a one-off.
+
+    This route does not touch the cheat manager. BeginDeferredActorSpawnFromClass
+    and FinishSpawningActor are ordinary UFunctions on UGameplayStatics, which
+    is a UBlueprintFunctionLibrary, so they are called on its CDO.
+
+    Deferred spawn is used rather than the one-shot form because it splits
+    construction from registration: the actor exists between the two calls, so
+    it can be positioned before it is made live. That avoids a character
+    appearing at the origin for a frame and then teleporting.
+
+    The trade against SBCreateCharacter is real. This skips whatever Stellar
+    Blade specific setup the game's own spawner would have done, so a character
+    produced this way may be missing state that only the game knows to apply.
+    Whether that matters is measured, not assumed: the caller checks the
+    spawned actor has a body mesh and an anim instance before treating it as
+    usable.
+--]]
+
+local function GameplayStatics()
+    local cdo = Try(StaticFindObject, "/Script/Engine.Default__GameplayStatics")
+    if IsLive(cdo) then return cdo end
+    return nil
+end
+
+--- Load a Blueprint generated class from its asset path.
+--- The runtime class is the asset name with "_C" appended.
+function Summon.LoadClass(assetPath)
+    local classPath = assetPath .. "_C"
+    local class = Try(StaticFindObject, classPath)
+    if IsLive(class) then return class end
+
+    -- Loading the asset registers its generated class.
+    if type(LoadAsset) == "function" then
+        Try(LoadAsset, assetPath)
+        class = Try(StaticFindObject, classPath)
+        if IsLive(class) then return class end
+    end
+    return nil, "class not found: " .. classPath
+end
+
+--- Spawn a Blueprint character near the player through the engine.
+---
+--- `assetPath` is the Blueprint asset, without "_C":
+---   /Game/Art/Character/NPC/CH_NPC_01/Blueprints/CH_NPC_01_Blueprint
+function Summon.SpawnClass(assetPath, offset)
+    offset = offset or {}
+
+    local statics = GameplayStatics()
+    if not statics then return nil, "UGameplayStatics CDO not found" end
+
+    local class, classError = Summon.LoadClass(assetPath)
+    if not class then return nil, classError end
+
+    local player = Actors.GetPlayerPawn()
+    if not IsLive(player) then return nil, "no player pawn" end
+
+    local origin = Actors.GetLocation(player)
+    local facing = Actors.GetRotation(player)
+    if not origin or not facing then return nil, "player transform unreadable" end
+
+    -- Place in the player's own frame, same convention as Actors.Align.
+    local theta = (facing.Yaw or 0.0) * math.pi / 180.0
+    local cos, sin = math.cos(theta), math.sin(theta)
+    local forward = offset.forward or 200.0
+    local right   = offset.right   or 0.0
+
+    local transform = {
+        Rotation    = { X = 0.0, Y = 0.0, Z = 0.0, W = 1.0 },
+        Translation = {
+            X = origin.X + forward * cos - right * sin,
+            Y = origin.Y + forward * sin + right * cos,
+            Z = origin.Z + (offset.up or 0.0),
+        },
+        Scale3D     = { X = 1.0, Y = 1.0, Z = 1.0 },
+    }
+
+    -- 2 = AlwaysSpawn. Anything else risks the spawn being refused because a
+    -- character-sized capsule overlaps geometry, which is common indoors and
+    -- would look like the whole route failing.
+    local actor = Try(function()
+        return statics:BeginDeferredActorSpawnFromClass(
+            player, class, transform, 2, nil)
+    end)
+    if not IsLive(actor) then return nil, "deferred spawn returned nothing" end
+
+    local finished = Try(function()
+        return statics:FinishSpawningActor(actor, transform)
+    end)
+    local spawned = IsLive(finished) and finished or actor
+    if not IsLive(spawned) then return nil, "FinishSpawningActor produced nothing" end
+
+    summoned[#summoned + 1] = { actor = spawned, alias = assetPath }
+    return spawned
+end
+
+--- Is a spawned character actually usable, or just an empty shell?
+---
+--- A spawn that returns an actor proves only that an object was constructed.
+--- What matters is whether it has the parts this framework drives.
+function Summon.Inspect(actor)
+    if not IsLive(actor) then return false, "actor is not valid" end
+
+    local mesh = Try(function() return actor:GetSBSkeletalMeshComponent(0) end)
+    if not IsLive(mesh) then return false, "no body mesh" end
+
+    local skeletal = Try(function() return mesh.SkeletalMesh end)
+    if not IsLive(skeletal) then return false, "mesh component has no skeletal mesh" end
+
+    local instance = Try(function() return mesh:GetAnimInstance() end)
+    if not IsLive(instance) then return false, "no anim instance" end
+
+    return true, string.format("mesh=%s anim=%s",
+        FullName(skeletal):match("([^%.]+)$") or "?",
+        FullName(instance):match("([^%.]+)$") or "?")
+end
+
 -- ----------------------------------------------------------------- teardown
 
 --- Remove everything this module summoned.

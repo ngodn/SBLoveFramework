@@ -59,6 +59,23 @@ content is the missing half, not that the lever is weak. Putting
 real content there is the next step, and the BlendSpace sample swap in
 [playback.md](playback.md) is the proven way to do it.
 
+## Open: what the upper slot actually blends toward
+
+Swapping an animation into `SBAnimGraphNode_CustomBlendSpacePlayer` and holding
+`CustomAnimAlpha_Upper` measured **4.01 cm**, identical to the 4.0 cm measured
+with the slot untouched. The sample swap reported success and five BlendSpaces
+were restored afterwards, so the write happened; it simply is not the asset
+that variable blends toward.
+
+So the lever is real and the content route is not found yet. Candidates not yet
+tried: the nine `FSBAnimNode_SequenceBlendedPlayer` nodes, the eleven
+`FAnimNode_ControlRig` nodes, and the `LayeredBoneBlend` nodes, which are the
+usual way an upper-body-only blend is built.
+
+Worth noting the 4.0 cm is stable across a swap, which suggests the variable
+blends toward a fixed reference pose rather than toward a slot whose contents
+can be replaced.
+
 ## Does not work: ModifyBone pins
 
 Setting `AnimGraphNode_ModifyBone.BoneToModify` and holding `Rotation` and

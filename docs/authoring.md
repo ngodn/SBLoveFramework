@@ -461,3 +461,50 @@ sblove asset <path>  confirm from inside the running game
 Every stage is verified: the size model against 17 animations, the rotation
 encoder against 206 tracks, a byte-exact round-trip, a contained edit, and now
 the loaded result read back in game.
+
+## WORKING: a hand-authored pose plays in game
+
+`Proto_Idle` track 48 (`Bip001-R-UpperArm`), 129 keys rewritten to a 90 degree
+roll, packed, loaded. Measured in the running game:
+
+```
+before   clavicle->hand 51.3 cm   dz -46.3     arm hanging at rest
+after    clavicle->hand 51.1 cm   dz  -8.3     arm raised
+```
+
+The hand moved 38 cm upward relative to the shoulder while the clavicle-to-hand
+distance stayed at 51 cm. That combination is the proof: a corrupt track would
+change the length or produce nonsense, and only a valid rotation moves the hand
+that far while preserving the bone chain.
+
+### Finding the animation that actually plays
+
+Editing `Proto_Walk` showed nothing because she was standing. The `live` console
+command lists the BlendSpaces currently driving her and the animation behind
+every sample:
+
+```
+SBAnimGraphNode_BlendSpacePlayer_2  weight 1.00
+  BlendSpace IdleRun_BS_Peaceful2D_Roll
+    sample 1: Proto_Idle      <- playing while standing
+    sample 3: Proto_Walk
+    sample 5: Proto_Jog
+```
+
+`Proto_Walk` was in the live BlendSpace all along; it simply was not the sample
+being blended. Reading the graph beats guessing from asset names.
+
+## Complete
+
+```
+retoc to-legacy      extract from the shipped paks
+SBAnimTool           decode, edit rotation or translation, re-encode
+retoc to-zen         pack to .utoc/.ucas/.pak
+~mods/               mount
+sblove live          find what is actually playing
+sblove where         measure the result in game
+```
+
+Custom animation content can be authored for Stellar Blade on a machine where
+its engine cannot be built, and Epic's retirement of the 4.26 dependency packs
+means that is true of every machine.

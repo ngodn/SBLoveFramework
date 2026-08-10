@@ -201,6 +201,7 @@ function Commands.help()
     Say("alpha <v> | hold <name|0xOFF> <v> | holds | clear | exec <cmd>")
     Say("swap <animPath> | unswap    upper-body custom slot content")
     Say("asset <objectPath>          read an AnimSequence's properties")
+    Say("live [minWeight]            BlendSpaces in use and their animations")
     Say("holdb <name> <0|1> | holdv <name> <x> <y> <z> | grope [side up fwd]")
     Say("mode: 0 ignore 1 replace 2 additive   space: 0 world 1 comp 2 parent 3 bone")
 end
@@ -540,6 +541,52 @@ function Commands.asset(path)
         local value = Try(function() return object[prop] end)
         Say(string.format("  %-16s %s", prop, tostring(value)))
     end
+end
+
+--- live [minWeight]   which BlendSpaces are actually driving her, and what
+--- animations their samples point at.
+---
+--- This is how to find the animation the game really plays. Editing Proto_Walk
+--- changed nothing on screen because it is a prototype asset nothing uses; the
+--- pak was loading correctly the whole time. The samples of a live BlendSpace
+--- name the animations that are genuinely in use.
+function Commands.live(minWeight)
+    local instance = Instance()
+    if not IsLive(instance) then Say("no anim instance") return end
+    local floor = tonumber(minWeight) or 0.05
+
+    local found = 0
+    for _, prop in ipairs(Playback.DiscoverNodes(instance)) do
+        local node = Try(function() return instance[prop] end)
+        if node ~= nil then
+            local weight = Number(Try(function() return node.BlendWeight end), 0)
+            if weight >= floor then
+                local space = Playback.GetBlendSpace(node)
+                local seq   = Try(function() return node.Sequence end)
+
+                if IsLive(space) then
+                    found = found + 1
+                    Say(string.format("%s  weight %.2f  BlendSpace %s", prop, weight,
+                        tostring(Try(function() return space:GetFullName() end))))
+                    local samples = Try(function() return space.SampleData end)
+                    if samples then
+                        for i = 1, 18 do
+                            local anim = Try(function() return samples[i].Animation end)
+                            if IsLive(anim) then
+                                Say("    sample " .. i .. ": " ..
+                                    tostring(Try(function() return anim:GetFullName() end)))
+                            end
+                        end
+                    end
+                elseif IsLive(seq) then
+                    found = found + 1
+                    Say(string.format("%s  weight %.2f  Sequence %s", prop, weight,
+                        tostring(Try(function() return seq:GetFullName() end))))
+                end
+            end
+        end
+    end
+    if found == 0 then Say("nothing live above weight " .. floor) end
 end
 
 function Commands.clear()

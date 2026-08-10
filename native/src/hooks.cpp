@@ -305,6 +305,32 @@ namespace Hooks
 
         const auto target = module_base + kProcessEventRva;
 
+        /* Wait for UE4SS to hook ProcessEvent before we do.
+         *
+         * We must be the OUTERMOST hook, installed last. Getting there first
+         * killed every Lua mod in the process, CNS included: we patched the
+         * pristine function, UE4SS patched over us, and its own interception
+         * stopped working. UE4SS.log went silent from that moment.
+         *
+         * The prologue check already refuses to patch over somebody else's
+         * hook. This is the same rule from the other side: do not put a hook
+         * somewhere another mod is about to patch.
+         *
+         * A foreign hook announces itself as a rip-relative jmp. UE4SS installs
+         * one during startup, so this normally returns almost immediately. */
+        for (int waited = 0; waited < 60; ++waited)
+        {
+            auto* probe = reinterpret_cast<const unsigned char*>(target);
+            if (probe[0] == 0xFF && probe[1] == 0x25) break;
+            if (waited == 0)
+            {
+                log("waiting for UE4SS to hook ProcessEvent first");
+                log("  hooking a pristine ProcessEvent before UE4SS does kills");
+                log("  every Lua mod in the process, this one included");
+            }
+            Sleep(500);
+        }
+
         log("holding CustomAnimAlpha");
         log("  anim instance: 0x%016llX",
             reinterpret_cast<unsigned long long>(anim_instance));

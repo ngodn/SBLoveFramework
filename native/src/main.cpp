@@ -272,6 +272,18 @@ namespace
     {
         LogOpen();
         Log("%s", kVersion);
+
+        /* Discard any handoff left by a previous session. A stale one is read
+         * at DLL load, which installs the hook before UE4SS is ready and takes
+         * the whole Lua subsystem down with it. */
+        {
+            wchar_t stale[MAX_PATH]{};
+            if (Ue4ssPath(L"\\SBLove_anim.txt", stale, MAX_PATH))
+            {
+                DeleteFileW(stale);
+            }
+        }
+
         Log("built on Linux with clang-cl, MSVC ABI, x86_64");
         Log("");
 

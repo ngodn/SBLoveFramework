@@ -251,37 +251,62 @@ local function ModsDirectory()
     return mods
 end
 
---- Scan for addon files and load them all. Returns loaded count, error count.
+--- ASCII-only check. Non-ASCII directory names come back mangled through this
+--- API and the resulting path cannot be opened, so they are skipped with a
+--- message rather than producing a confusing "cannot open file" later. CNS does
+--- the same, for the same reason.
+local function IsAscii(text)
+    return not string.find(text, "[^\x20-\x7E]")
+end
+
+--- Scan for addon files and load them all.
+--- Returns scenes loaded, problems, and how many candidate files were seen.
+---
+--- The shape of this tree is not obvious and getting it wrong is silent: files
+--- hang off `dir.__files`, each with `__name` and `__absolute_path`, while
+--- subdirectories are the keys that do NOT begin with "__". A first attempt
+--- looked for `__absolute_path` directly on every table, found nothing, and
+--- reported "0 files found" while the addon sat exactly where it belonged.
 function Registry.ScanAll()
     packs, scenes, errors = {}, {}, {}
 
     local mods, err = ModsDirectory()
     if not mods then
         Problem("%s", tostring(err))
-        return 0, #errors
+        return 0, #errors, 0
     end
 
-    -- Walk the whole ~mods tree rather than only the canonical subdirectory,
-    -- because installers vary and users unpack archives in odd places. Anything
-    -- whose name ends in the suffix counts.
+    -- The whole ~mods tree is walked rather than only the canonical
+    -- subdirectory, because installers vary and archives get unpacked in odd
+    -- places. Anything whose name ends in the suffix counts.
     local found = 0
-    local function walk(node, depth)
-        if depth > 6 or type(node) ~= "table" then return end
-        for _, entry in pairs(node) do
-            if type(entry) == "table" then
-                local path = entry.__absolute_path
-                if type(path) == "string"
-                    and path:sub(-#Registry.SUFFIX) == Registry.SUFFIX then
-                    found = found + 1
-                    Registry.LoadFile(path)
-                else
-                    walk(entry, depth + 1)
-                end
+
+    local function walk(dir, name, depth)
+        if type(dir) ~= "table" or depth > 8 then return end
+        if name and not IsAscii(name) then
+            Problem("skipped folder with non-ASCII name: %s", name)
+            return
+        end
+
+        for _, file in pairs(dir.__files or {}) do
+            local fileName = file.__name or ""
+            if fileName:sub(-#Registry.SUFFIX) == Registry.SUFFIX then
+                found = found + 1
+                Registry.LoadFile(file.__absolute_path)
+            end
+        end
+
+        for key, sub in pairs(dir) do
+            if type(sub) == "table" and type(key) == "string"
+                and not key:match("^__") then
+                walk(sub, key, depth + 1)
             end
         end
     end
 
-    pcall(walk, mods, 0)
+    local ok, walkError = pcall(walk, mods, nil, 0)
+    if not ok then Problem("scan failed: %s", tostring(walkError)) end
+
     return #scenes, #errors, found
 end
 

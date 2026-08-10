@@ -106,11 +106,17 @@ end
 local function BoneLocation(pawn, boneName)
     local mesh = Playback.GetMesh(pawn, 0)
     if not IsLive(mesh) then return nil end
-    -- GetBoneLocationByName, not GetBoneLocation. The first attempt guessed
-    -- the name, got nil, and reported "nothing to measure" -- the third time
-    -- this session an assumed API name has masqueraded as a real finding.
+    -- GetSocketLocation, inherited from USceneComponent. In UE a socket name
+    -- falls back to a bone name, so this reads bones on any mesh.
+    --
+    -- Two earlier attempts failed the same way, and neither was a typo.
+    -- GetBoneLocation does not exist, and GetBoneLocationByName lives on
+    -- UPoseableMeshComponent (Engine.hpp:17616), not on the skeletal mesh Eve
+    -- actually has. Both returned nil, and nil read as "the bone did not
+    -- move". The lesson is to check which CLASS owns a function in the dump
+    -- before calling it, not just that the name appears somewhere.
     local location = Try(function()
-        return mesh:GetBoneLocationByName(FName(boneName), 0) end)
+        return mesh:GetSocketLocation(FName(boneName)) end)
     if not location then return nil end
     return {
         x = Number(location.X, 0.0),

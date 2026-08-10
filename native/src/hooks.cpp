@@ -140,6 +140,14 @@ namespace
     Hooks::Pose g_pose{};
     volatile LONG g_pose_writes = 0;
 
+    /* Bounded and fixed-size so the detour never allocates or locks. It runs
+     * on the game thread inside ProcessEvent; anything heavier here is the fps
+     * cliff that made the Lua route unusable in the first place. */
+    constexpr int kMaxHolds = 24;
+    Hooks::Hold g_holds[kMaxHolds]{};
+    volatile LONG g_hold_count = 0;
+    volatile LONG g_hold_writes = 0;
+
     /* Re-assert the pose. Called only from the detour, after the original, so
      * it lands after the graph has re-copied its exposed pins. */
     inline void ApplyPose()
@@ -185,6 +193,13 @@ namespace
             InterlockedIncrement(&g_alpha_writes);
 
             if (g_pose.node != nullptr) ApplyPose();
+
+            const long count = g_hold_count;
+            for (long i = 0; i < count; ++i)
+            {
+                if (g_holds[i].address) *g_holds[i].address = g_holds[i].value;
+            }
+            if (count > 0) InterlockedIncrement(&g_hold_writes);
         }
     }
 
@@ -453,6 +468,31 @@ namespace Hooks
     void ClearPose()
     {
         g_pose.node = nullptr;
+    }
+
+    void SetHolds(const Hold* holds, int count, LogFunc log)
+    {
+        if (count > kMaxHolds) count = kMaxHolds;
+
+        /* Count goes to zero first so the detour can never walk a table that
+         * is halfway through being rewritten. */
+        g_hold_count = 0;
+        for (int i = 0; i < count; ++i) g_holds[i] = holds[i];
+        g_hold_count = count;
+
+        log("holding %d float%s after every ProcessEvent", count,
+            count == 1 ? "" : "s");
+        for (int i = 0; i < count; ++i)
+        {
+            log("  0x%016llX = %.3f",
+                reinterpret_cast<unsigned long long>(holds[i].address),
+                holds[i].value);
+        }
+    }
+
+    long HoldWrites()
+    {
+        return InterlockedCompareExchange(&g_hold_writes, 0, 0);
     }
 
     long PoseWrites()

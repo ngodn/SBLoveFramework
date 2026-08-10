@@ -69,6 +69,27 @@ namespace Hooks
     };
 
     void HoldPose(const Pose& pose, LogFunc log);
+
+    /* ------------------------------------------------- hold arbitrary floats
+     *
+     * The pose struct was too narrow. Writing a ModifyBone node's Alpha pin
+     * does not survive, because the anim graph copies its exposed pins from
+     * anim-BP variables after the event graph runs and just before evaluating.
+     * Our write lands in the window between and is overwritten before it
+     * matters, which is why the node reads alpha 1.00 and still contributes
+     * nothing. physics.lua hit the same wall.
+     *
+     * So the useful primitive is not "hold a pose", it is "hold these floats",
+     * because the thing worth writing is the VARIABLE the pin is copied from,
+     * and which variable that is has to be found by experiment. */
+    struct Hold
+    {
+        float* address = nullptr;
+        float value = 0.0f;
+    };
+
+    void SetHolds(const Hold* holds, int count, LogFunc log);
+    long HoldWrites();
     void ClearPose();
     long PoseWrites();
 

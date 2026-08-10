@@ -223,6 +223,30 @@ namespace
             return false;
         }
 
+        /* "hold=0x<offset> <value>" lines: absolute-offset float writes,
+         * re-asserted after every ProcessEvent on this instance. Offsets are
+         * relative to the anim instance, so the Lua side can name a variable
+         * from the header dump without native needing to know any of them. */
+        {
+            Hooks::Hold holds[24]{};
+            int count = 0;
+            const char* scan = buffer;
+            while (count < 24 && (scan = strstr(scan, "hold=")) != nullptr)
+            {
+                unsigned off = 0;
+                float v = 0.0f;
+                if (sscanf_s(scan, "hold=0x%x %f", &off, &v) == 2)
+                {
+                    holds[count].address = reinterpret_cast<float*>(
+                        static_cast<uintptr_t>(instance) + off);
+                    holds[count].value = v;
+                    ++count;
+                }
+                scan += 5;
+            }
+            Hooks::SetHolds(holds, count, Log);
+        }
+
         /* An optional second line asks for a limb pose. Lua sets BoneToModify,
          * because that is an FName; native holds the numbers, because they are
          * exposed pins the graph re-copies every frame. */

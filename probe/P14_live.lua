@@ -111,6 +111,15 @@ local Picked      = "AnimGraphNode_ModifyBone"
 local OriginalBone = nil
 local Pose = { pitch = 0, yaw = 0, roll = 0, mode = 2, space = 3, alpha = 1.0 }
 
+--- Floats to re-assert after every ProcessEvent, as offset -> value.
+---
+--- Writing an anim node's pin does not stick: the graph copies its exposed
+--- pins from anim-BP variables just before evaluating, so a pin write lands in
+--- the window between and is gone before it matters. The variable is the thing
+--- worth holding. Which variable feeds which node is not in the dump, so it
+--- has to be found by trying them, which is what this is for.
+local Holds = {}
+
 local function Instance()
     local pawn = Actors.GetPlayerPawn()
     if not IsLive(pawn) then return nil, nil end
@@ -154,6 +163,9 @@ local function PushPose()
     file:write(string.format(
         "pose=0x%X pitch=%.2f yaw=%.2f roll=%.2f mode=%d space=%d\n",
         address + offset, Pose.pitch, Pose.yaw, Pose.roll, Pose.mode, Pose.space))
+    for off, value in pairs(Holds) do
+        file:write(string.format("hold=0x%X %.4f\n", off, value))
+    end
     file:close()
     return true
 end
@@ -182,7 +194,7 @@ local Commands = {}
 function Commands.help()
     Say("status | bones <sub> | where <bone> | nodes [minweight] | get <prop>")
     Say("pick <NodeName> | bone <BoneName> | pose <p> <y> <r> [mode] [space]")
-    Say("alpha <v> | clear | exec <console command>")
+    Say("alpha <v> | hold <name|0xOFF> <v> | holds | clear | exec <cmd>")
     Say("mode: 0 ignore 1 replace 2 additive   space: 0 world 1 comp 2 parent 3 bone")
 end
 
@@ -320,9 +332,68 @@ function Commands.alpha(value)
         ok and "handed to native" or tostring(err)))
 end
 
+--- hold <hexoffset> <value>   re-assert a float on the anim instance
+---
+--- Offsets come from research/CXXHeaderDump/CH_P_EVE_01_AnimBP_New.hpp. Named
+--- shortcuts cover the ones worth trying first; anything else can be given as
+--- a raw offset, because the point is to find which variable actually drives a
+--- node and that is not documented anywhere.
+local NAMED = {
+    ikalpharight        = 0x113AC,
+    ikalphaleft         = 0x113A8,
+    handikright         = 0x11CBC,   -- EventMoveIKAlpha_Hand_R
+    handikleft          = 0x11CB8,   -- EventMoveIKAlpha_Hand_L
+    footikright         = 0x11CC4,
+    footikleft          = 0x11CC0,
+    eventmoveik         = 0x11C20,
+    customanimalpha     = 0x11330,
+    customanimalpha2    = 0x11338,
+    customanimadditive  = 0x1133C,
+    customanimupper     = 0x11378,
+    toermove            = 0x11180,
+    toelmove            = 0x1117C,
+    fullbodyik          = 0x11D38,
+}
+
+function Commands.hold(what, value)
+    if not what then
+        Say("usage: hold <name|0xOFFSET> <value>   (hold none  to drop all)")
+        local names = {}
+        for k in pairs(NAMED) do names[#names + 1] = k end
+        table.sort(names)
+        for _, k in ipairs(names) do
+            Say(string.format("  %-20s +0x%05X", k, NAMED[k]))
+        end
+        return
+    end
+    if what:lower() == "none" then
+        Holds = {}
+        local ok, err = PushPose()
+        Say("all holds dropped -> " .. (ok and "ok" or tostring(err)))
+        return
+    end
+
+    local offset = NAMED[what:lower()] or tonumber(what)
+    if not offset then Say("unknown: " .. what) return end
+    Holds[offset] = tonumber(value) or 1.0
+    local ok, err = PushPose()
+    Say(string.format("hold +0x%X = %.3f -> %s", offset, Holds[offset],
+        ok and "handed to native" or tostring(err)))
+end
+
+function Commands.holds()
+    local n = 0
+    for off, v in pairs(Holds) do
+        Say(string.format("  +0x%05X = %.3f", off, v))
+        n = n + 1
+    end
+    if n == 0 then Say("  nothing held") end
+end
+
 function Commands.clear()
+    Holds = {}
     Restore()
-    Say("node restored and pose dropped")
+    Say("node restored, pose and holds dropped")
 end
 
 function Commands.exec(...)

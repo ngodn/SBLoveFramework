@@ -7,6 +7,7 @@
 # nothing, and because uninstalling has to remove the output files too.
 #
 #   ./install.sh              install and enable
+#   ./install.sh probe NAME   install probe/NAME.lua as the entry point
 #   ./install.sh disable      leave files in place but stop it loading
 #   ./install.sh uninstall    remove the mod and its output entirely
 #   ./install.sh status       report what is installed
@@ -48,6 +49,25 @@ case "${1:-install}" in
         printf '\nLoad a save and stand in the world. Output:\n  %s\n' "${OUTPUTS[0]}"
         ;;
 
+    probe)
+        # Install a probe in place of main.lua. The probe still needs the
+        # modules beside it, so everything is copied and only the entry point
+        # differs. Running install again puts the real mod back.
+        check_game
+        name="${2:-}"
+        [ -n "$name" ] || die "usage: ./install.sh probe <name>  (e.g. P9_console)"
+        src="$SOURCE/probe/$name.lua"
+        [ -f "$src" ] || die "no such probe: $src"
+        mkdir -p "$TARGET/Scripts"
+        cp "$SOURCE/Scripts/"*.lua "$TARGET/Scripts/"
+        cp "$src" "$TARGET/Scripts/main.lua"
+        : > "$TARGET/enabled.txt"
+        rm -f "${OUTPUTS[@]}"
+        printf 'probe %s installed as the entry point\n' "$name"
+        printf 'run the game, then: ./install.sh status\n'
+        printf 'restore the real mod with: ./install.sh\n'
+        ;;
+
     disable)
         # UE4SS keys off enabled.txt, so removing it is enough. Keeping the
         # scripts means re-enabling is instant.
@@ -81,6 +101,6 @@ case "${1:-install}" in
         ;;
 
     *)
-        die "unknown command '$1' (install | disable | uninstall | status)"
+        die "unknown command '$1' (install | probe <name> | disable | uninstall | status)"
         ;;
 esac

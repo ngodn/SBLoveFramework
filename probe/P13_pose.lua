@@ -106,8 +106,11 @@ end
 local function BoneLocation(pawn, boneName)
     local mesh = Playback.GetMesh(pawn, 0)
     if not IsLive(mesh) then return nil end
+    -- GetBoneLocationByName, not GetBoneLocation. The first attempt guessed
+    -- the name, got nil, and reported "nothing to measure" -- the third time
+    -- this session an assumed API name has masqueraded as a real finding.
     local location = Try(function()
-        return mesh:GetBoneLocation(FName(boneName), 0) end)
+        return mesh:GetBoneLocationByName(FName(boneName), 0) end)
     if not location then return nil end
     return {
         x = Number(location.X, 0.0),
@@ -126,6 +129,12 @@ end
 
 local Step, Ticks = "wait", 0
 local Instance, NodeAddress = nil, nil
+--- What the borrowed node pointed at before we took it. This node is not
+--- really idle: the game drives its alpha during play, which is why repointing
+--- it alone was enough to visibly move Eve's arm. Left unrestored, her toe
+--- correction keeps landing on her forearm until the level reloads.
+local OriginalBone = nil
+
 local Anchor      = nil     -- first measured hand position
 local NaturalDrift = 0.0    -- how far it wanders on its own
 local PosedDrift   = 0.0    -- how far it moves once the pose is held
@@ -143,6 +152,23 @@ local function Handoff()
         NodeAddress, POSE.pitch, POSE.yaw, POSE.roll, POSE.mode, POSE.space))
     file:close()
     return true
+end
+
+--- Put the borrowed node back. Skipping this leaves Eve's toe correction
+--- driving her forearm for the rest of the session.
+function Restore()
+    if not OriginalBone or OriginalBone == "" then return end
+    local pawn = Actors.GetPlayerPawn()
+    local instance = Playback.GetAnimInstance(pawn, 0)
+    if not IsLive(instance) then return end
+    local node = Try(function() return instance[MODIFY_NODE] end)
+    if node == nil then return end
+    local ok = pcall(function()
+        node.BoneToModify.BoneName = FName(OriginalBone)
+    end)
+    Out(string.format("restored %s -> %s (%s)", MODIFY_NODE, OriginalBone,
+        ok and "ok" or "FAILED"))
+    OriginalBone = nil
 end
 
 local function Tick()
@@ -201,6 +227,7 @@ local function Tick()
             return
         end
 
+        OriginalBone = bone
         -- The one thing Lua does: point the node at the bone we want.
         local ok = pcall(function()
             node.BoneToModify.BoneName = FName(TARGET_BONE)
@@ -210,13 +237,16 @@ local function Tick()
         if not ok then Step = "finished" return end
 
         Anchor = BoneLocation(pawn, MEASURE_BONE)
-        if not Anchor then
-            Out("  cannot read " .. MEASURE_BONE .. " location, nothing to measure")
-            Step = "finished"
-            return
+        if Anchor then
+            Out(string.format("  %s at (%.1f, %.1f, %.1f)", MEASURE_BONE,
+                Anchor.x, Anchor.y, Anchor.z))
+        else
+            -- Not fatal. The last run aborted here and so never handed the
+            -- pose over, which meant the thing being tested never ran at all.
+            -- A broken instrument should not cancel the experiment.
+            Out("  cannot read " .. MEASURE_BONE .. ", continuing without")
+            Out("  numeric proof; the visible result still counts.")
         end
-        Out(string.format("  %s at (%.1f, %.1f, %.1f)", MEASURE_BONE,
-            Anchor.x, Anchor.y, Anchor.z))
 
         Out("")
         Out("CONTROL: 8 seconds of natural drift, pose not yet requested")
@@ -228,6 +258,7 @@ local function Tick()
         local now = BoneLocation(pawn, MEASURE_BONE)
         local drift = Distance(Anchor, now)
         if drift and drift > NaturalDrift then NaturalDrift = drift end
+        if not Anchor then Anchor = now end
 
         Ticks = Ticks + 1
         if Ticks < 16 then return end
@@ -280,6 +311,7 @@ local function Tick()
             Out("  into the graph's output at all -- a node can exist and be")
             Out("  evaluated by nothing.")
         end
+        Restore()
         Out("")
         Out("ALL DONE -- you can quit.")
         Step = "finished"
@@ -294,4 +326,10 @@ Out("")
 pcall(LoopAsync, POLL_MS, function()
     ExecuteInGameThread(Tick)
     return false
+end)
+
+-- Also restore if the mod is unloaded or the game leaves gameplay mid-run,
+-- so a quit partway through does not leave the node hijacked.
+pcall(RegisterOnUnloadCallback or function() end, function()
+    Try(Restore)
 end)

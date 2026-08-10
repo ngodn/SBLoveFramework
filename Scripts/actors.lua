@@ -143,21 +143,40 @@ function Actors.Resolve(name)
     return best
 end
 
---- Any SBCharacter near the player, whatever it is.
+--- Is this class a humanoid character rather than a creature?
 ---
---- The named registry above only knows the characters worth naming, and those
---- are not loaded everywhere: Adam and Lily live in Xion and story areas, and
---- Raven only exists during her encounter. In a dungeon there may be nobody
---- named at all, which blocks testing anything that needs two actors.
+--- The content tree splits them cleanly and the class names follow it:
 ---
---- FindAllOf on the C++ base class returns every derived instance, so this
---- finds enemies and incidental NPCs too. They make perfectly good test
---- partners: what matters for pairing is an actor with an anim instance and a
---- live BlendSpace, not who the character is.
+---     CH_P_*     player characters      /Art/Character/PC/
+---     CH_NPC_*   named and generic NPCs /Art/Character/NPC/
+---     CH_M_*     monsters               /Art/Character/Monster/
 ---
---- Returns nearest first. The player is excluded.
-function Actors.NearbyCharacters(maxDistance)
+--- Monsters are excluded by default. They satisfy every technical requirement
+--- for a scene partner, which is why they were useful while testing, but they
+--- are not what this framework is for.
+---
+--- The exception is deliberate: a few humanoid bosses live under Monster,
+--- Raven being CH_M_NA_53. Those are reachable by name through the registry
+--- above, which is the right way to ask for one, rather than by sweeping up
+--- whatever creature happens to be nearby.
+function Actors.IsHumanoidClass(className)
+    if type(className) ~= "string" then return false end
+    return className:find("^CH_NPC_") ~= nil or className:find("^CH_P_") ~= nil
+end
+
+--- Humanoid characters near the player, nearest first.
+---
+--- FindAllOf on the C++ base class returns every derived instance, so this sees
+--- every character the level has loaded, then filters. The player is excluded,
+--- and so are creatures unless opts.includeCreatures is set.
+---
+--- The named registry above only knows characters worth naming, and those are
+--- not loaded everywhere: Adam and Lily live in Xion and story areas. This is
+--- how a scene finds a partner the registry does not list, such as a generic
+--- Xion citizen.
+function Actors.NearbyCharacters(maxDistance, opts)
     maxDistance = maxDistance or 3000.0
+    opts = opts or {}
 
     local player = Actors.GetPlayerPawn()
     if not IsLive(player) then return {} end
@@ -179,11 +198,15 @@ function Actors.NearbyCharacters(maxDistance)
             if type(distance) == "number" and distance <= maxDistance then
                 local class = Try(function()
                     return candidate:GetClass():GetFName():ToString() end)
-                found[#found + 1] = {
-                    actor    = candidate,
-                    distance = distance,
-                    class    = class or "?",
-                }
+                local humanoid = Actors.IsHumanoidClass(class)
+                if humanoid or opts.includeCreatures then
+                    found[#found + 1] = {
+                        actor    = candidate,
+                        distance = distance,
+                        class    = class or "?",
+                        humanoid = humanoid,
+                    }
+                end
             end
         end
     end

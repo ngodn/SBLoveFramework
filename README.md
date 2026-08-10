@@ -20,8 +20,8 @@ yet exercised with two actors.
 | --- | --- |
 | Animation playback | **working, visually confirmed** |
 | Actor resolution, placement, pairing maths | written |
-| Scene engine: stages + intensity axis | written, untested |
-| Secondary motion coupled to intensity | written, untested |
+| Scene engine: stages + intensity axis | **working**, solo, measured in game |
+| Secondary motion coupled to intensity | **working**, persists and restores cleanly |
 | Contact colliders | written, untested |
 | Addon registry (`.sblove.json`) | not started |
 | Outfit backends (CNS + native) | not started |

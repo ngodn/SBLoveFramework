@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+#
+# Drive the running game. Requires the P14 live console:
+#   ./install.sh probe P14_live
+#
+#   ./sblove status
+#   ./sblove bone Bip001-R-Forearm
+#   ./sblove pose 0 0 45
+#   ./sblove clear
+#
+# Writes a sequence-numbered command and waits for the reply carrying that same
+# number. The sequence is what makes this trustworthy: without it, reading the
+# output file could return the previous command's result, and a stale read that
+# looks like a fresh answer is exactly the failure mode that has cost this
+# project several debugging cycles.
+
+set -uo pipefail
+
+SB_DIR="${SB_DIR:-/mnt/eins0fxE/SteamLibrary/steamapps/common/StellarBlade}"
+UE4SS="$SB_DIR/SB/Binaries/Win64/ue4ss"
+CMD="$UE4SS/SBLove_cmd.txt"
+OUT="$UE4SS/SBLove_out.txt"
+TIMEOUT="${SBLOVE_TIMEOUT:-6}"
+
+[ -d "$UE4SS" ] || { echo "UE4SS not found at $UE4SS" >&2; exit 1; }
+
+if [ $# -eq 0 ]; then
+    sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+fi
+
+# Seconds since epoch with nanoseconds: unique per call, and monotonic enough
+# that an old reply can never be mistaken for a new one.
+seq="$(date +%s%N)"
+printf '%s %s\n' "$seq" "$*" > "$CMD"
+
+deadline=$(( $(date +%s) + TIMEOUT ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    if [ -f "$OUT" ] && [ "$(head -1 "$OUT" 2>/dev/null)" = "seq=$seq" ]; then
+        tail -n +2 "$OUT"
+        exit 0
+    fi
+    sleep 0.2
+done
+
+echo "no reply within ${TIMEOUT}s." >&2
+echo "Is the game running with the P14 live console installed?" >&2
+echo "  ./install.sh probe P14_live" >&2
+exit 1

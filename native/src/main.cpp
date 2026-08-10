@@ -166,6 +166,10 @@ namespace
     /* The Lua side finds Eve's anim instance and writes its address here. Lua
      * can find the object; only native code can order a write after the event
      * graph, which is the whole problem P8 could not solve. */
+    /* Last handoff seen, so a rewritten file is noticed but an unchanged one
+     * is not re-applied 120 times a minute. */
+    char g_last_request[512]{};
+
     bool ReadAnimRequest(const ModuleInfo& game)
     {
         wchar_t path[MAX_PATH]{};
@@ -182,6 +186,12 @@ namespace
         ReadFile(file, buffer, sizeof(buffer) - 1, &read, nullptr);
         CloseHandle(file);
         buffer[read] = '\0';
+
+        /* Unchanged since last time means nothing to do. This is what lets the
+         * Lua side rewrite the file to retune a pose without a game restart:
+         * the poll is cheap and only acts on an actual edit. */
+        if (strcmp(buffer, g_last_request) == 0) return true;
+        strcpy_s(g_last_request, sizeof(g_last_request), buffer);
 
         unsigned long long instance = 0;
         unsigned offset = 0;
@@ -320,7 +330,10 @@ namespace
 
                 /* The Lua side writes this once it has found Eve's anim
                  * instance, which cannot happen before gameplay. */
-                if (!announced_alpha && ReadAnimRequest(game))
+                /* Polled every pass, not once. A pose is retuned by rewriting
+                 * the handoff file, which is the whole point of a live loop:
+                 * an experiment per game launch is not a workable pace. */
+                if (ReadAnimRequest(game))
                 {
                     announced_alpha = true;
                 }

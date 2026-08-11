@@ -61,8 +61,24 @@ BONES = ('Bip001-Spine1', 'Bip001-Spine2', 'Bip001-R-UpperArm', 'Bip001-L-UpperA
 BODY_BONES = tuple({b for pair in BODY for b in pair[:2]})
 
 
-def sh(cmd):
-    return subprocess.run(cmd, cwd=HERE, capture_output=True, text=True).stdout
+class PoseFailed(Exception):
+    """./pose could not confirm the game applied the patch."""
+
+
+def sh(cmd, check=False):
+    """Run a command. With check, a non-zero exit is an ERROR, not a shrug.
+
+    This used to return stdout and discard the exit code entirely, which made
+    a failed ./pose invisible: the solver carried on and measured her previous
+    pose as though it were the one just requested. ./pose now exits 2 when the
+    DLL does not acknowledge the patch, and that has to be able to stop a solve
+    rather than quietly bias it.
+    """
+    r = subprocess.run(cmd, cwd=HERE, capture_output=True, text=True)
+    if check and r.returncode != 0:
+        raise PoseFailed((r.stderr or r.stdout).strip() or
+                         ' '.join(cmd) + f' exited {r.returncode}')
+    return r.stdout
 
 
 def seg_dist(p, a, b):
@@ -138,8 +154,10 @@ def probe(angles, static=None):
     once per iteration instead.
     """
     p, y, r, f = angles
-    sh(['./pose', '48', f'{p:.3f}', f'{y:.3f}', f'{r:.3f}'])
-    sh(['./pose', '49', '0', '0', f'{f:.3f}'])
+    # check=True: an unconfirmed pose must stop the solve, not silently feed it
+    # the previous pose's measurements.
+    sh(['./pose', '48', f'{p:.3f}', f'{y:.3f}', f'{r:.3f}'], check=True)
+    sh(['./pose', '49', '0', '0', f'{f:.3f}'], check=True)
     d = dict(static) if static else {}
     d.update(read_bones(('Bip001-R-',)) if static else read_bones())
     if not all(b in d for b in BONES):
@@ -263,12 +281,14 @@ def main():
         #
         # Position is converged and cannot be spent from here, so the remaining
         # iterations are free. Give them to the elbow.
+        # Counts CUMULATIVELY and is never reset. An elbow nudge is expected to
+        # knock position just out of tolerance, and the next iteration pulls it
+        # back; resetting on that would let the pair cycle for the full
+        # iteration budget at roughly 90 s each, four waypoints deep.
         if conv:
             settled += 1
             if elb < 3.0 or settled > 4:
                 print('  converged'); break
-        else:
-            settled = 0
 
         # Jacobians, measured in game. Four probes; nothing here can disagree
         # with the engine about handedness or euler order.
@@ -334,7 +354,18 @@ def main():
         if dist < GATE and gap < 0.0:
             jj = sum(v * v for v in Jg) + 1e-6
             pref = [Jg[k] * (0.5 - gap) / jj * GAIN for k in range(4)]
-        elif dist < GATE:
+        elif conv:
+            # ONLY ONCE POSITION HAS LANDED, not merely "close" (dist < GATE).
+            #
+            # Measured: gating this at 6 cm had the elbow term firing while the
+            # position solve was still moving, and the two fought. The trace ran
+            # miss 2.80 -> 3.13 -> 42.72 while drop climbed 9.5 -> 13.5 -> 23.3;
+            # the elbow reached its range and took position apart doing it.
+            #
+            # The whole idea is that these iterations are FREE, and they are only
+            # free after the hand has arrived. Before that they are not spare
+            # freedom at all, they are competition.
+            #
             # TWO elbow objectives now, flare and drop, so this is a 2x4 system
             # rather than a single row. Its minimum-norm solution is
             # A^T (A A^T)^-1 b, which is the same least-squares step the
@@ -349,10 +380,13 @@ def main():
             u = solveN(AAt, b)
             if u is not None:
                 pref = [sum(A[i][k] * u[i] for i in range(2)) * GAIN for k in range(4)]
-            # Never let the preference outrun the task step it rides on.
+            # SMALL steps. The point is to nudge the elbow without knocking the
+            # hand back out of tolerance, so each pass moves a little and the
+            # next iteration re-converges position around it. 8 degrees was
+            # enough to leave the region where the measured Jacobian is valid.
             big = max(abs(v) for v in pref)
-            if big > 8.0:
-                pref = [v * 8.0 / big for v in pref]
+            if big > 3.0:
+                pref = [v * 3.0 / big for v in pref]
         v = solveN(JJt, [sum(Jp[k][i] * pref[k] for k in range(4)) for i in range(3)])
         if v is not None:
             proj = [sum(Jp[k][i] * v[i] for i in range(3)) for k in range(4)]
@@ -381,4 +415,11 @@ def main():
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except PoseFailed as e:
+        # Stop. A solve that cannot trust its own measurements is worse than no
+        # solve, because it writes a confident answer into the path cache.
+        print(f'\n  POSE NOT CONFIRMED: {e}')
+        print('  stopping rather than solving against stale measurements')
+        raise SystemExit(2)

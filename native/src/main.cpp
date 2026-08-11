@@ -417,6 +417,42 @@ namespace
         }
 
         strcpy_s(applied, sizeof(applied), stamp);
+
+        /* ACKNOWLEDGE, so callers can WAIT for the patch instead of guessing.
+         *
+         * This closes a bug that quietly corrupted measurements all session.
+         * ./pose wrote this file and slept 0.8 s, on the reasoning that the
+         * poll interval is 500 ms. When the patch had not landed by then, the
+         * next command measured her PREVIOUS pose and attributed it to the
+         * angles just requested.
+         *
+         * It is not a small error. One solve read her REST pose -- arm hanging,
+         * drop 22.5, flare 2.0 -- as the result of a chest pose, scoring the
+         * palm 45.23 cm from a target the same angles had measured at 2.80 cm
+         * moments earlier. A closed-loop solver believes its measurements, so a
+         * single stale read poisons the Jacobian and everything after it.
+         *
+         * No sleep is long enough to fix this, because the wait is on an event
+         * rather than on a duration: a hitching frame makes any constant wrong.
+         * Writing the stamp back means the caller can poll for THIS patch, and
+         * a caller that never sees its own stamp knows it failed rather than
+         * carrying on with a stale number. */
+        wchar_t ackPath[MAX_PATH]{};
+        if (Ue4ssPath(L"\\SBLove_ack.txt", ackPath, MAX_PATH))
+        {
+            HANDLE ack = CreateFileW(ackPath, GENERIC_WRITE, FILE_SHARE_READ,
+                                     nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                                     nullptr);
+            if (ack != INVALID_HANDLE_VALUE)
+            {
+                char line[96]{};
+                const int n = sprintf_s(line, sizeof(line), "%s %d\n", stamp, count);
+                DWORD written = 0;
+                if (n > 0) WriteFile(ack, line, static_cast<DWORD>(n), &written, nullptr);
+                CloseHandle(ack);
+            }
+        }
+
         Log("  applied %d byte patches", count);
         Log("  the change is live; no repack and no restart");
         return true;

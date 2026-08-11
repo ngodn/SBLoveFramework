@@ -41,10 +41,10 @@ touch "$CACHE"
 # converging -- because it sits far from every useful seed. Removing it costs
 # nothing and removes the whole failure.
 PATH_SPEC=(
-  "graze    0.40    4.2  -1.0   4.7"
-  "cup      0.60    4.4  -0.3   4.9"
-  "press    0.72    3.8  -0.3   4.2"
-  "ease     0.86    4.5  -0.6   5.0"
+  "graze    0.40    7.6  -3.6   2.7"
+  "cup      0.60    8.0  -1.5   3.0"
+  "press    0.72    7.0  -1.2   2.4"
+  "ease     0.86    8.3  -2.2   3.3"
 )
 
 if [ "${1:-}" != "--emit" ]; then
@@ -64,7 +64,12 @@ if [ "${1:-}" != "--emit" ]; then
     # burned its whole iteration budget and still missed by 5.74 cm.
     # This pose solved to 0.79 cm against the physics-derived offset and is the
     # one confirmed on screen as reaching her breast.
-    seed="--seed 10.898 100.018 51.966 -152.995"
+    # Seeded from the CONFIRMED cup pose -- the one checked on screen as
+    # actually cupping her breast rather than resting at the inner edge of her
+    # cleavage. Targets are ~8 cm outboard of the breast bone because the bone
+    # sits medial; 3.5 cm put her palm in her cleavage while measuring a BETTER
+    # reach (3.7 cm) than the correct pose (5.3 cm). No metric here caught that.
+    seed="--seed 1.324 104.417 55.043 -153.308"
     while read -r n _u p y r f _m; do
         [ -n "${n:-}" ] && seed="--seed $p $y $r $f"
     done < "$CACHE"
@@ -150,9 +155,20 @@ emit() {
     patch="$(cd "$ROOT/tools/SBAnimTool" && dotnet run --project . -- \
         "$ASSET" "$USMAP" --emitanim "$track" "$@" 2>/dev/null)"
     grep -q '^bulksize' <<<"$patch" || { echo "  track $track failed"; return 1; }
-    { echo "$addr"; echo "stamp=$(date +%s%N)"; echo "$patch"; } > "$UE4SS/SBLove_patch.txt"
+    local stamp; stamp="$(date +%s%N)"
+    { echo "$addr"; echo "stamp=$stamp"; echo "$patch"; } > "$UE4SS/SBLove_patch.txt"
     grep '^#' <<<"$patch" | sed 's/^/  /'
-    sleep 1
+    # Wait for the DLL to confirm THIS write, the same as ./pose does. `sleep 1`
+    # here meant a track that never landed looked identical to one that did, and
+    # baking is 20-odd of these in a row: one silent miss leaves a limb on the
+    # old keys and the animation looks subtly wrong with nothing to point at.
+    for _ in $(seq 1 100); do
+        [ -f "$UE4SS/SBLove_ack.txt" ] && \
+            grep -q "^$stamp " "$UE4SS/SBLove_ack.txt" && return 0
+        sleep 0.05
+    done
+    echo "  track $track NOT CONFIRMED after 5 s" >&2
+    return 1
 }
 
 # ---------------------------------------------------------------- fingers

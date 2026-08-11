@@ -51,18 +51,38 @@ grep -q '^bulksize' <<<"$patch" || { echo "patch failed:"; echo "$patch" | head 
 addr="$(./sblove animaddr "$OBJECT_PATH" 2>/dev/null | grep -oE 'object=0x[0-9A-Fa-f]+')"
 [ -n "$addr" ] || { echo "could not get the object address; is the game running?" >&2; exit 1; }
 
+STAMP="$(date +%s%N)"
 {
     echo "$addr"
     # A stamp so the DLL applies each request once rather than every poll.
-    echo "stamp=$(date +%s%N)"
+    echo "stamp=$STAMP"
     echo "$patch"
 } > "$UE4SS/SBLove_patch.txt"
 
-# The DLL polls the handoff file every 500 ms, so returning as soon as it is
-# written lets the next command measure the PREVIOUS pose. That race produced a
-# whole shoulder-pitch sweep of meaningless numbers, and a forearm-twist test
-# that read as non-monotonic when it was simply being sampled too early.
-sleep 0.8
+# WAIT FOR THE DLL TO SAY IT APPLIED THIS PATCH. Do not sleep and hope.
+#
+# This used to be `sleep 0.8`, reasoning that the DLL polls every 500 ms. When
+# the patch had not landed in time the next command measured her PREVIOUS pose
+# and credited it to the angles just requested. That is how a solve read her
+# REST pose -- arm hanging at her side -- as the result of a chest pose, and
+# scored the palm 45.23 cm from a target the very same angles had measured at
+# 2.80 cm minutes earlier. ./magnet is closed-loop and believes what it reads,
+# so one stale sample poisons the Jacobian and every iteration after it.
+#
+# No constant is long enough, because the wait is on an EVENT and not on a
+# duration: one hitching frame makes any fixed sleep wrong again. The DLL now
+# writes the stamp it applied, so this waits for OUR stamp specifically.
+ACK="$UE4SS/SBLove_ack.txt"
+for _ in $(seq 1 100); do                      # 100 x 50 ms = 5 s ceiling
+    [ -f "$ACK" ] && grep -q "^$STAMP " "$ACK" && break
+    sleep 0.05
+done
+if ! grep -q "^$STAMP " "$ACK" 2>/dev/null; then
+    # LOUD. A silent timeout here is exactly the stale read this replaced.
+    echo "pose NOT CONFIRMED after 5 s: the DLL never acknowledged stamp $STAMP" >&2
+    echo "  anything measured now is the PREVIOUS pose. Is the game running?" >&2
+    exit 2
+fi
 
 echo "track $TRACK  pitch $PITCH  yaw $YAW  roll $ROLL"
 grep -c '^patch' <<<"$patch" | xargs echo "  byte patches:"

@@ -20,13 +20,31 @@ TRACK="${1:?usage: ./pose <track> <pitch> <yaw> <roll>}"
 PITCH="${2:-0}"; YAW="${3:-0}"; ROLL="${4:-0}"
 
 ROOT=~/development/mods/stellar-blade
-SCRATCH=/tmp/claude-1000/-home-eins0fx-development-mods-stellar-blade/65251bed-369b-4c6d-b391-1d8aac543dc9/scratchpad
-ASSET="$SCRATCH/idle/SB/Content/Art/Character/PC/CH_P_EVE_01/Animation/Proto_Idle.uasset"
+# Which loaded animation to patch. Proto_Idle is the default because it is what
+# plays, but it has NO breast tracks -- 139 tracks, none of them Ab-*-Breast --
+# so it cannot carry a contact deformation at all.
+#
+# Proto_Idle_Social has 313 tracks including all eight breast bones (204-211)
+# alongside the arm (59/60/61), and it is loaded in memory too. Set:
+#
+#   ANIM=Proto_Idle_Social ./pose 211 ...
+#
+# Track numbers differ per animation and must be mapped through the skeleton
+# with --bones, never assumed: the right arm is 48/49/50 in Proto_Idle and
+# 59/60/61 in Proto_Idle_Social.
+ANIM="${ANIM:-Proto_Idle}"
+# The export name inside the package is lower-cased for Proto_Idle only.
+case "$ANIM" in
+    Proto_Idle) EXPORT="proto_Idle" ;;
+    *)          EXPORT="$ANIM" ;;
+esac
+ASSET="$(pwd)/assets/SB/Content/Art/Character/PC/CH_P_EVE_01/Animation/$ANIM.uasset"
+[ -f "$ASSET" ] || { echo "no such extracted animation: $ASSET" >&2; exit 1; }
 USMAP="$ROOT/research/StellarBlade_retail_dumped.usmap"
-OBJECT_PATH="/Game/Art/Character/PC/CH_P_EVE_01/Animation/Proto_Idle.proto_Idle"
+OBJECT_PATH="/Game/Art/Character/PC/CH_P_EVE_01/Animation/$ANIM.$EXPORT"
 UE4SS="/mnt/eins0fxE/SteamLibrary/steamapps/common/StellarBlade/SB/Binaries/Win64/ue4ss"
 
-patch="$(cd "$ROOT/tools/SBAnimTool" && dotnet run --project . -- \
+patch="$(cd "$ROOT/tools/SBAnimTool" && dotnet run --no-build --project . -- \
     "$ASSET" "$USMAP" --emitpatch "$TRACK" "$PITCH" "$YAW" "$ROLL" 2>/dev/null)"
 grep -q '^bulksize' <<<"$patch" || { echo "patch failed:"; echo "$patch" | head -3; exit 1; }
 
@@ -39,6 +57,12 @@ addr="$(./sblove animaddr "$OBJECT_PATH" 2>/dev/null | grep -oE 'object=0x[0-9A-
     echo "stamp=$(date +%s%N)"
     echo "$patch"
 } > "$UE4SS/SBLove_patch.txt"
+
+# The DLL polls the handoff file every 500 ms, so returning as soon as it is
+# written lets the next command measure the PREVIOUS pose. That race produced a
+# whole shoulder-pitch sweep of meaningless numbers, and a forearm-twist test
+# that read as non-monotonic when it was simply being sampled too early.
+sleep 0.8
 
 echo "track $TRACK  pitch $PITCH  yaw $YAW  roll $ROLL"
 grep -c '^patch' <<<"$patch" | xargs echo "  byte patches:"

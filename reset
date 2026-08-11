@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Put posed tracks back to the animation the game shipped, live.
+#
+#   ./reset            restore the right arm (shoulder, elbow, wrist)
+#   ./reset 48 49      restore just those tracks
+#
+# Patching is in-memory, so once a track is overwritten there is nothing left to
+# undo from. SBAnimTool copies the original bytes out of the on-disk asset,
+# which is never modified.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+ROOT=~/development/mods/stellar-blade
+ASSET="$(pwd)/assets/SB/Content/Art/Character/PC/CH_P_EVE_01/Animation/Proto_Idle.uasset"
+USMAP="$ROOT/research/StellarBlade_retail_dumped.usmap"
+OBJECT_PATH="/Game/Art/Character/PC/CH_P_EVE_01/Animation/Proto_Idle.proto_Idle"
+UE4SS="/mnt/eins0fxE/SteamLibrary/steamapps/common/StellarBlade/SB/Binaries/Win64/ue4ss"
+
+TRACKS=("$@"); [ ${#TRACKS[@]} -eq 0 ] && TRACKS=(48 49 50)
+
+addr="$(./sblove animaddr "$OBJECT_PATH" 2>/dev/null | grep -oE 'object=0x[0-9A-Fa-f]+')"
+[ -n "$addr" ] || { echo "could not get the object address; is the game running?" >&2; exit 1; }
+
+for t in "${TRACKS[@]}"; do
+    patch="$(cd "$ROOT/tools/SBAnimTool" && dotnet run --no-build --project . -- \
+        "$ASSET" "$USMAP" --emitorig "$t" 2>/dev/null)"
+    grep -q '^bulksize' <<<"$patch" || { echo "track $t: restore failed"; continue; }
+    { echo "$addr"; echo "stamp=$(date +%s%N)"; echo "$patch"; } > "$UE4SS/SBLove_patch.txt"
+    grep '^#' <<<"$patch" | sed 's/^/  /'
+    sleep 1
+done

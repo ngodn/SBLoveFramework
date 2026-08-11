@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Displace the breast bone over the animation: the squish.
+#
+#   ./squish <u>:<x>,<y>,<z> [...]      offsets in cm, added to the shipped keys
+#   ./squish --reset                    put the shipped translation back
+#
+# Dm-R-Breast-Point (track 208 in Proto_Idle_Social) sits at the top of the
+# breast chain and carries 299 translation keys -- the game's own animators
+# displace her this way. Pushing that bone INTO the body compresses the flesh
+# skinned between it and the ribcage, which is a real squash; SpringBone_3 then
+# adds the settle. Scale would be the textbook route and UE does not export it
+# on deformation bones, which this animation confirms with perTrack=2.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+ROOT=~/development/mods/stellar-blade
+ANIM=Proto_Idle_Social
+TRACK="${TRACK:-208}"
+ASSET="$(pwd)/assets/SB/Content/Art/Character/PC/CH_P_EVE_01/Animation/$ANIM.uasset"
+USMAP="$ROOT/research/StellarBlade_retail_dumped.usmap"
+OBJ="/Game/Art/Character/PC/CH_P_EVE_01/Animation/$ANIM.$ANIM"
+UE4SS="/mnt/eins0fxE/SteamLibrary/steamapps/common/StellarBlade/SB/Binaries/Win64/ue4ss"
+
+if [ "${1:-}" = "--reset" ]; then set -- 0:0,0,0 1:0,0,0; fi
+
+patch="$(cd "$ROOT/tools/SBAnimTool" && dotnet run --no-build --project . -- \
+    "$ASSET" "$USMAP" --emitanimtrans "$TRACK" "$@" 2>/dev/null)"
+grep -q '^bulksize' <<<"$patch" || { echo "patch failed:"; echo "$patch" | head -3; exit 1; }
+addr="$(./sblove animaddr "$OBJ" 2>/dev/null | grep -oE 'object=0x[0-9A-Fa-f]+')"
+[ -n "$addr" ] || { echo "no object address" >&2; exit 1; }
+{ echo "$addr"; echo "stamp=$(date +%s%N)"; echo "$patch"; } > "$UE4SS/SBLove_patch.txt"
+grep '^#' <<<"$patch" | sed 's/^/  /'
+sleep 1

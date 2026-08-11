@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# Solve a whole path with the magnet, then bake it into the animation keys.
+#
+#   ./bake            solve every waypoint and emit the animation
+#   ./bake --emit     skip solving, emit from the cached solutions
+#
+# The path is written as TARGETS -- where her hand should be, relative to her
+# breast bone -- not as joint angles. ./magnet turns each one into angles by
+# closing the loop against the game, and --emitanim slerps between them with
+# smoothstep easing.
+#
+# Solutions are cached in reference/path.txt because each solve costs a few
+# minutes of probing. Re-running only solves what is missing.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+CACHE=reference/path.txt
+mkdir -p reference
+touch "$CACHE"
+
+# name        u      lat    up    fwd     what it is
+#
+# THESE ARE DERIVED, not tuned -- and NOT from the breast sphere.
+#
+# Ab-R-Breast's sphere (r=4.70) reaches 11.97 cm from the spine axis while her
+# TORSO capsule is 10.37 cm around that axis, so the breast sphere is entirely
+# INSIDE her torso. Targeting its surface put the palm inside her chest, and the
+# solver could hit the target or stay outside her but never both.
+#
+# Her real outer surface at the chest is the torso capsule. With the hand's own
+# 2.73 cm the palm must sit 13.10 cm from the spine axis, which is 5.83 cm
+# outward of the breast bone. `press` goes to 0.82 of that: pressed in, but not
+# through her.
+#
+# Pacing, from the animation principles that matter here: a slow approach is
+# what builds anticipation, contact SLOWS the motion rather than speeding it up,
+# and pressure cycles rather than holding. See docs/magnet.md.
+# `approach` used to sit here at breast + (16,-14,4). It is gone on purpose: the
+# REST pose is already low and outboard, her arm hanging at her side, so
+# rest -> graze IS the approach. It was also the only waypoint that ever failed
+# to solve -- 8.76, 19.67 and a run that wandered 24.7 -> 31.1 without
+# converging -- because it sits far from every useful seed. Removing it costs
+# nothing and removes the whole failure.
+PATH_SPEC=(
+  "graze    0.40    4.2  -1.0   4.7"
+  "cup      0.60    4.4  -0.3   4.9"
+  "press    0.72    3.8  -0.3   4.2"
+  "ease     0.86    4.5  -0.6   5.0"
+)
+
+if [ "${1:-}" != "--emit" ]; then
+    # Each waypoint seeds from the PREVIOUS one's solution. These are points on
+    # a path, a few centimetres apart, so the previous answer is a much better
+    # starting guess than a fixed pose. Seeding every solve from the same
+    # authored pose left `cup` stranded at 13.08 cm after running out of
+    # iterations, on a target a standalone run had reached to 0.48 cm.
+    # The FIRST waypoint seeds from rest, not from the authored chest pose.
+    # `approach` is low and outboard, near her ribs; starting the solve from a
+    # hand already up at her chest is the furthest possible starting point and
+    # it failed from there twice, at 8.76 cm and 19.67 cm. The animation itself
+    # begins at rest, so solving from rest is both closer and more honest.
+    # Seed the first waypoint from a CONFIRMED CONTACT POSE, not from rest.
+    # These targets sit 4.7 cm from the breast bone -- on her body -- and rest
+    # has her arm hanging at her side, which is far enough away that `graze`
+    # burned its whole iteration budget and still missed by 5.74 cm.
+    # This pose solved to 0.79 cm against the physics-derived offset and is the
+    # one confirmed on screen as reaching her breast.
+    seed="--seed 10.898 100.018 51.966 -152.995"
+    while read -r n _u p y r f _m; do
+        [ -n "${n:-}" ] && seed="--seed $p $y $r $f"
+    done < "$CACHE"
+
+    for spec in "${PATH_SPEC[@]}"; do
+        read -r name u lat upo fwo <<<"$spec"
+        if grep -q "^$name " "$CACHE"; then echo "  have  $name"; continue; fi
+        echo "  solving $name -> breast + ($lat, $upo, $fwo)"
+        # shellcheck disable=SC2086
+        out="$(./magnet "$lat" "$upo" "$fwo" $seed --quiet 2>&1)" || true
+        sol="$(grep '^SOLVED' <<<"$out" | tail -1)"
+        if [ -z "$sol" ]; then
+            echo "$out" | tail -3
+            echo "  FAILED on $name; stopping so the cache stays honest" >&2
+            exit 1
+        fi
+        # The BEST miss the solve found, not the last iteration's. Gauss-Newton
+        # here is not monotonic and can wander after finding a good pose.
+        miss="$(grep -oE 'final miss +[0-9.]+' <<<"$out" | grep -oE '[0-9.]+')"
+        read -r _ p y r f <<<"$sol"
+        # Clipping is rejected the same way a miss is. A waypoint can sit exactly
+        # on target and still be buried in her chest -- that was the whole reason
+        # the arm looked wrong even at 0.17 cm. ./clearance measures it against
+        # her 36 collision bodies.
+        # Judge the PALM, not the wrist. Cupping from underneath naturally tucks
+        # the wrist closer to her body than the palm, so a wrist-based check
+        # rejects perfectly good poses -- and pushing the palm further out to
+        # satisfy it drags the wrist in deeper, which made things worse.
+        gap="$(./clearance 2>/dev/null | grep -E '^ +PALM ' | grep -oE 'is +[0-9.]+' | grep -oE '[0-9.]+' | head -1)"
+        if [ -n "${gap:-}" ] && awk -v g="$gap" 'BEGIN{exit !(g>1.0)}'; then
+            echo "    -> buried ${gap} cm in her body: NOT cached" >&2
+            exit 1
+        fi
+        # A waypoint that did not converge must NOT be cached as if it had.
+        # `cup` was written at 13.08 cm and would have baked a hand nowhere near
+        # her. Contact waypoints have to land; only `approach` is free space.
+        limit=3.0; [ "$name" = "approach" ] && limit=6.0
+        if awk -v m="$miss" -v l="$limit" 'BEGIN{exit !(m>l)}'; then
+            echo "    -> miss ${miss} cm, over ${limit}: NOT cached" >&2
+            echo "       re-run ./bake to retry it from the previous waypoint" >&2
+            exit 1
+        fi
+        echo "$name $u $p $y $r $f $miss" >> "$CACHE"
+        echo "    -> 48:($p $y $r) 49:$f   miss ${miss} cm"
+        # Advance the seed. Computing it once before the loop meant `press` was
+        # still seeded from `graze` after `cup` had been solved, and it missed by
+        # 7.56 cm. Each waypoint must start from the one immediately before it.
+        seed="--seed $p $y $r $f"
+    done
+fi
+
+echo
+echo "path:"
+column -t "$CACHE" 2>/dev/null || cat "$CACHE"
+
+# Rest is the shipped idle pose, so the loop closes cleanly back into it.
+REST_SH="0 80 0"; REST_EL="-20"
+
+wp48="0:$REST_SH"
+wp49="0:0,0,$REST_EL"
+while read -r name u p y r f miss; do
+    [ -n "${name:-}" ] || continue
+    wp48="$wp48 $u:$p,$y,$r"
+    wp49="$wp49 $u:0,0,$f"
+done < "$CACHE"
+wp48="$wp48 1:$REST_SH"
+wp49="$wp49 1:0,0,$REST_EL"
+# The shoulder waypoints need commas between the three angles.
+wp48="$(sed 's/:\([-0-9.]*\) \([-0-9.]*\) \([-0-9.]*\)/:\1,\2,\3/g' <<<"$wp48")"
+
+ROOT=~/development/mods/stellar-blade
+ASSET="$(pwd)/assets/SB/Content/Art/Character/PC/CH_P_EVE_01/Animation/Proto_Idle.uasset"
+USMAP="$ROOT/research/StellarBlade_retail_dumped.usmap"
+OBJ="/Game/Art/Character/PC/CH_P_EVE_01/Animation/Proto_Idle.proto_Idle"
+UE4SS="/mnt/eins0fxE/SteamLibrary/steamapps/common/StellarBlade/SB/Binaries/Win64/ue4ss"
+
+addr="$(./sblove animaddr "$OBJ" 2>/dev/null | grep -oE 'object=0x[0-9A-Fa-f]+')"
+[ -n "$addr" ] || { echo "no object address; is the game running?" >&2; exit 1; }
+
+emit() {
+    local track="$1"; shift
+    local patch
+    patch="$(cd "$ROOT/tools/SBAnimTool" && dotnet run --project . -- \
+        "$ASSET" "$USMAP" --emitanim "$track" "$@" 2>/dev/null)"
+    grep -q '^bulksize' <<<"$patch" || { echo "  track $track failed"; return 1; }
+    { echo "$addr"; echo "stamp=$(date +%s%N)"; echo "$patch"; } > "$UE4SS/SBLove_patch.txt"
+    grep '^#' <<<"$patch" | sed 's/^/  /'
+    sleep 1
+}
+
+# ---------------------------------------------------------------- fingers
+#
+# The hand OPENS and CLOSES with the reach instead of being a separate command.
+#
+# Curl is ROLL, found by measuring: +40 on the middle knuckle pulls the
+# fingertip from 14.82 cm to 12.91 cm from the wrist, while pitch and yaw move
+# it about as far without closing the hand.
+#
+# The curl is ADDED to her shipped finger pose, never replacing it. Her relaxed
+# hand already carries roll 20/17/9 down the finger, and writing an absolute
+# 0,0,0 at rest would give her unnaturally straight fingers on every loop.
+#
+# Tracks: thumb 51-53, index 54-56, middle 57-59, ring 60-62, pinky 63-65.
+CURL_BASE=35; CURL_MID=45; CURL_TIP=30; CURL_THUMB=30
+
+finger_wp() {   # finger_wp <track> <curl>
+    local track="$1" curl="$2" base
+    base="$(cd "$ROOT/tools/SBAnimTool" && dotnet run --no-build --project . -- \
+        "$ASSET" "$USMAP" --dumprot "$track" 400 2>/dev/null | sed -n '3p')"
+    read -r _ bp by br <<<"$base"
+    [ -n "${br:-}" ] || return 1
+    # closes into contact, tightest at `press`, releases slower than it closed
+    awk -v p="$bp" -v y="$by" -v r="$br" -v c="$curl" 'BEGIN{
+        printf "0:%.2f,%.2f,%.2f 0.40:%.2f,%.2f,%.2f 0.60:%.2f,%.2f,%.2f " \
+               "0.72:%.2f,%.2f,%.2f 0.86:%.2f,%.2f,%.2f 1:%.2f,%.2f,%.2f",
+               p,y,r, p,y,r+c*0.40, p,y,r+c, p,y,r+c*1.15, p,y,r+c*0.75, p,y,r }'
+}
+
+echo
+echo "baking:"
+emit 48 $wp48
+emit 49 $wp49
+for f in 54 57 60 63; do
+    for j in 0 1 2; do
+        case $j in 0) c=$CURL_BASE;; 1) c=$CURL_MID;; *) c=$CURL_TIP;; esac
+        w="$(finger_wp $((f + j)) $c)" && emit $((f + j)) $w >/dev/null
+    done
+done
+for t in 51 52 53; do
+    w="$(finger_wp $t $CURL_THUMB)" && emit $t $w >/dev/null
+done
+echo "  fingers 51-65 curl with the reach"
+echo
+echo "applied. ./reset puts her arm back."

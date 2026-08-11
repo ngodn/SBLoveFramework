@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Curl her right hand: the difference between a flat palm and a cupping one.
+#
+#   ./curl <base> <mid> <tip> [thumb]     degrees of roll per joint
+#   ./curl 0 0 0 0                        flat again
+#
+# ROLL is the curl axis, found by measuring: +40 on the middle knuckle pulls the
+# fingertip from 14.82 cm to 12.91 cm from the wrist, -40 pushes it to 15.33.
+# Pitch and yaw move the tip about as far but do not close the hand.
+#
+# Tracks, from the skeleton map (Proto_Idle): thumb 51-53, index 54-56,
+# middle 57-59, ring 60-62, pinky 63-65. Each finger is base, middle, tip.
+#
+# A hand cupping something curls progressively -- the middle joint closes most --
+# and the thumb opposes rather than following, so it gets its own value.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+BASE="${1:-25}"; MID="${2:-35}"; TIP="${3:-20}"; THUMB="${4:-20}"
+
+for t in 51 52 53; do ./pose "$t" 0 0 "$THUMB" >/dev/null 2>&1; done
+for f in 54 57 60 63; do
+    ./pose "$f"            0 0 "$BASE" >/dev/null 2>&1
+    ./pose "$((f + 1))"    0 0 "$MID"  >/dev/null 2>&1
+    ./pose "$((f + 2))"    0 0 "$TIP"  >/dev/null 2>&1
+done
+echo "curled: base $BASE  mid $MID  tip $TIP  thumb $THUMB"

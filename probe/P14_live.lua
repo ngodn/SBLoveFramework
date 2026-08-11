@@ -202,6 +202,7 @@ function Commands.help()
     Say("swap <animPath> | unswap    upper-body custom slot content")
     Say("asset <objectPath>          read an AnimSequence's properties")
     Say("live [minWeight]            BlendSpaces in use and their animations")
+    Say("animaddr <objectPath>       address of a loaded AnimSequence")
     Say("holdb <name> <0|1> | holdv <name> <x> <y> <z> | grope [side up fwd]")
     Say("mode: 0 ignore 1 replace 2 additive   space: 0 world 1 comp 2 parent 3 bone")
 end
@@ -587,6 +588,25 @@ function Commands.live(minWeight)
         end
     end
     if found == 0 then Say("nothing live above weight " .. floor) end
+end
+
+--- animaddr <objectPath>   address of a loaded AnimSequence
+---
+--- Only Lua can resolve a UObject by path, and only native can write into the
+--- compressed buffer it owns. This hands the address across so an animation can
+--- be edited in memory, which removes the repack-and-restart cycle entirely.
+function Commands.animaddr(path)
+    if not path then Say("usage: animaddr <objectPath>") return end
+    local object = Try(StaticFindObject, path)
+    if not IsLive(object) then
+        Try(LoadAsset, path)
+        object = Try(StaticFindObject, path)
+    end
+    if not IsLive(object) then Say("not loaded: " .. path) return end
+    local addr = Try(function() return object:GetAddress() end)
+    if not addr then Say("GetAddress failed") return end
+    Say(string.format("object=0x%X", addr))
+    Say(string.format("  %s", path))
 end
 
 function Commands.clear()

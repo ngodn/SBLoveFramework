@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# Pose a bone in a LOADED animation, with no repack and no restart.
+#
+#   ./pose <track> <pitch> <yaw> <roll>
+#
+# The compressed buffer edited on disk and the one the game holds in memory are
+# the same structure, so the same byte offsets apply to both. SBAnimTool works
+# out the patch from the extracted asset, Lua supplies the address of the loaded
+# object, and the native side copies the bytes in.
+#
+# All the format knowledge stays in SBAnimTool. Nothing here or in the DLL knows
+# what a quaternion is, so there is one implementation of the encoder rather
+# than two that can drift.
+
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+TRACK="${1:?usage: ./pose <track> <pitch> <yaw> <roll>}"
+PITCH="${2:-0}"; YAW="${3:-0}"; ROLL="${4:-0}"
+
+ROOT=~/development/mods/stellar-blade
+SCRATCH=/tmp/claude-1000/-home-eins0fx-development-mods-stellar-blade/65251bed-369b-4c6d-b391-1d8aac543dc9/scratchpad
+ASSET="$SCRATCH/idle/SB/Content/Art/Character/PC/CH_P_EVE_01/Animation/Proto_Idle.uasset"
+USMAP="$ROOT/research/StellarBlade_retail_dumped.usmap"
+OBJECT_PATH="/Game/Art/Character/PC/CH_P_EVE_01/Animation/Proto_Idle.proto_Idle"
+UE4SS="/mnt/eins0fxE/SteamLibrary/steamapps/common/StellarBlade/SB/Binaries/Win64/ue4ss"
+
+patch="$(cd "$ROOT/tools/SBAnimTool" && dotnet run --project . -- \
+    "$ASSET" "$USMAP" --emitpatch "$TRACK" "$PITCH" "$YAW" "$ROLL" 2>/dev/null)"
+grep -q '^bulksize' <<<"$patch" || { echo "patch failed:"; echo "$patch" | head -3; exit 1; }
+
+addr="$(./sblove animaddr "$OBJECT_PATH" 2>/dev/null | grep -oE 'object=0x[0-9A-Fa-f]+')"
+[ -n "$addr" ] || { echo "could not get the object address; is the game running?" >&2; exit 1; }
+
+{
+    echo "$addr"
+    # A stamp so the DLL applies each request once rather than every poll.
+    echo "stamp=$(date +%s%N)"
+    echo "$patch"
+} > "$UE4SS/SBLove_patch.txt"
+
+echo "track $TRACK  pitch $PITCH  yaw $YAW  roll $ROLL"
+grep -c '^patch' <<<"$patch" | xargs echo "  byte patches:"
+grep '^#' <<<"$patch" | sed 's/^/  /'

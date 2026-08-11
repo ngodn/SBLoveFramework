@@ -281,6 +281,147 @@ namespace
         return true;
     }
 
+    /* Is this address safe to read? The object address arrives from another
+     * process via a text file, so it is checked rather than trusted. */
+    bool Readable(const void* address, size_t bytes)
+    {
+        MEMORY_BASIC_INFORMATION info{};
+        if (!VirtualQuery(address, &info, sizeof(info))) return false;
+        if (info.State != MEM_COMMIT) return false;
+        const DWORD ok = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+                         PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+        if (!(info.Protect & ok) || (info.Protect & PAGE_GUARD)) return false;
+        const auto start = reinterpret_cast<uintptr_t>(address);
+        const auto end = reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize;
+        return start + bytes <= end;
+    }
+
+    /* Patch the compressed animation buffer of an AnimSequence already loaded
+     * in the game.
+     *
+     * The buffer edited on disk and the one held in memory are the same
+     * structure, so applying the same byte offsets live changes the animation
+     * with no repack and no restart. That turns a several-minute iteration into
+     * a couple of seconds, which matters when the angles have to be found by
+     * measuring rather than derived.
+     *
+     * FCompressedAnimSequence holds CompressedByteStream as its third TArray,
+     * but rather than trust a hardcoded offset the buffer is FOUND: scan the
+     * object for a TArray whose Num equals the size the file says it should be.
+     * An exact size match on a five-figure number is not something a wrong
+     * field lands on by accident. */
+    bool ApplyAnimPatch()
+    {
+        wchar_t path[MAX_PATH]{};
+        if (!Ue4ssPath(L"\\SBLove_patch.txt", path, MAX_PATH)) return false;
+        if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) return false;
+
+        HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return false;
+
+        static char buffer[1 << 20];
+        DWORD read = 0;
+        ReadFile(file, buffer, sizeof(buffer) - 1, &read, nullptr);
+        CloseHandle(file);
+        buffer[read] = '\0';
+
+        static char applied[64]{};
+        char stamp[64]{};
+        const char* stampLine = strstr(buffer, "stamp=");
+        if (stampLine) sscanf_s(stampLine, "stamp=%63s", stamp, 64u);
+        if (stamp[0] && strcmp(stamp, applied) == 0) return false;   /* already done */
+
+        unsigned long long objectAddr = 0;
+        unsigned bulkSize = 0;
+        const char* o = strstr(buffer, "object=");
+        /* Accept "bulksize 123" and "bulksize=123". The emitter writes the
+         * former and the first parser only matched the latter, so it silently
+         * found nothing and returned. A parse that declines without saying why
+         * is the same failure mode as a logger that cannot open its file. */
+        const char* b = strstr(buffer, "bulksize");
+        if (!o || !b)
+        {
+            Log("SBLove_patch.txt missing object= or bulksize");
+            return false;
+        }
+        sscanf_s(o, "object=0x%llx", &objectAddr);
+        if (sscanf_s(b, "bulksize=%u", &bulkSize) != 1)
+            sscanf_s(b, "bulksize %u", &bulkSize);
+        if (!objectAddr || !bulkSize)
+        {
+            Log("SBLove_patch.txt: object=0x%llX bulksize=%u, one is unusable",
+                objectAddr, bulkSize);
+            return false;
+        }
+
+        Log("");
+        Log("######## LIVE ANIM PATCH ########");
+        Log("  AnimSequence object 0x%016llX, expecting a %u byte buffer",
+            objectAddr, bulkSize);
+
+        /* Find the buffer by CONTENT, not by container layout.
+         *
+         * The first attempt looked for a TArray whose Num matched the file's
+         * buffer size and found nothing, because in a shipping build
+         * CompressedByteStream is a TMaybeMappedArray, not a TArray: it exists
+         * to support memory-mapped animation, so its layout is not
+         * {ptr, num, max} and no field holds the size where one was expected.
+         *
+         * Matching the first sixteen bytes sidesteps the container entirely.
+         * Sixteen specific bytes at a pointer inside this exact object is not
+         * something a wrong slot lands on. */
+        uint8_t want[16]{};
+        const char* sigLine = strstr(buffer, "signature ");
+        if (!sigLine) { Log("  patch file has no signature line"); return false; }
+        for (int i = 0; i < 16; i++)
+        {
+            unsigned v = 0;
+            sscanf_s(sigLine + 10 + i * 2, "%2x", &v);
+            want[i] = static_cast<uint8_t>(v);
+        }
+
+        uint8_t* found = nullptr;
+        for (size_t off = 0; off + 8 <= 0x300; off += 8)
+        {
+            auto* slot = reinterpret_cast<uint8_t*>(objectAddr + off);
+            if (!Readable(slot, 8)) continue;
+            auto* data = *reinterpret_cast<uint8_t**>(slot);
+            if (!data || !Readable(data, bulkSize)) continue;
+            if (memcmp(data, want, sizeof(want)) != 0) continue;
+            found = data;
+            Log("  buffer found via +0x%zX -> 0x%016llX", off,
+                reinterpret_cast<unsigned long long>(data));
+            break;
+        }
+        if (!found)
+        {
+            Log("  no pointer in this object reaches a buffer starting with the");
+            Log("  expected 16 bytes. Either the object address is wrong, or the");
+            Log("  loaded animation is not the one the patch was computed from.");
+            return false;
+        }
+
+        int count = 0;
+        for (const char* line = strstr(buffer, "patch "); line; line = strstr(line, "patch "))
+        {
+            unsigned at = 0, hex = 0;
+            if (sscanf_s(line, "patch %u %4x", &at, &hex) == 2 && at + 2 <= bulkSize)
+            {
+                /* Emitted big-endian as printed, written little-endian as stored. */
+                found[at]     = static_cast<uint8_t>((hex >> 8) & 0xFF);
+                found[at + 1] = static_cast<uint8_t>(hex & 0xFF);
+                ++count;
+            }
+            line += 6;
+        }
+
+        strcpy_s(applied, sizeof(applied), stamp);
+        Log("  applied %d byte patches", count);
+        Log("  the change is live; no repack and no restart");
+        return true;
+    }
+
     /* Runs when the hijacked console command fires.
      *
      * The FString argument is still sitting unparsed in the FFrame. Reading it
@@ -390,6 +531,8 @@ namespace
                 {
                     announced_alpha = true;
                 }
+
+                ApplyAnimPatch();
 
                 if (announced_alpha)
                 {

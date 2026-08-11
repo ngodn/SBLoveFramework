@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Hand position relative to the chest, in the body's own axes.
+# World coordinates are meaningless here because she can face any direction.
+cd "$(dirname "${BASH_SOURCE[0]}")"
+for b in Bip001-Spine1 Bip001-Spine2 Bip001-R-Clavicle Bip001-L-Clavicle Bip001-R-Hand; do
+    printf "%s " "$b"; ./sblove where $b 2>/dev/null | sed 's/.*(//;s/)//'
+done | python3 -c "
+import sys, math
+d={}
+for line in sys.stdin:
+    n,_,v=line.strip().partition(' ')
+    try: d[n.strip()]=tuple(float(x) for x in v.split(','))
+    except: pass
+if len(d)<5: print('  incomplete read'); raise SystemExit
+def sub(a,b): return tuple(x-y for x,y in zip(a,b))
+def ln(v): return math.sqrt(sum(c*c for c in v))
+def norm(v):
+    l=ln(v); return tuple(c/l for c in v) if l else v
+def cross(a,b): return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
+def dot(a,b): return sum(x*y for x,y in zip(a,b))
+up   = norm(sub(d['Bip001-Spine2'], d['Bip001-Spine1']))
+rt   = norm(sub(d['Bip001-R-Clavicle'], d['Bip001-L-Clavicle']))
+fwd  = norm(cross(up, rt))
+v    = sub(d['Bip001-R-Hand'], d['Bip001-Spine2'])
+r,u,f = dot(v,rt), dot(v,up), dot(v,fwd)
+# Target: her right breast. Right of centre, a little above spine2, in front.
+tr,tu,tf = 10.0, 4.0, 12.0
+err = math.sqrt((tr-r)**2 + (tu-u)**2 + (tf-f)**2)
+print(f'  hand  right {r:+6.1f}  up {u:+6.1f}  fwd {f:+6.1f}   error {err:5.1f} cm')
+"

@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# Where hands want to go: the tier-1 attention anchors, derived not authored.
+#
+#   ./anchors               list every anchor with its live world position
+#   ./anchors nipple.right  print one, for feeding to ./magnet
+#
+# See docs/attention.md. The magnet answers "put the palm HERE"; this chooses
+# the HERE, so an act can say `tier1.breast.right` instead of three numbers.
+#
+# NOT ALL OF THESE ARE BONES. The skeleton has breast bones and a pelvis, and no
+# nipple, vagina or rectum bones at all. Those are computed from a bone plus a
+# radius, so they follow whatever body is equipped rather than being constants:
+#
+#     nipple = Ab-R-Breast + outward * breastRadius
+#     vagina = Bip001-Pelvis + (forward, down) * pelvisRadius
+#     rectum = Bip001-Pelvis + (back, down)    * pelvisRadius
+#
+# `outward` is radial from the spine axis, which is the only direction that
+# stays correct as she twists.
+#
+# RADII SOURCE, and the caveat that matters: these come from --bodies reading
+# CH_P_EVE_01_Physics, which is STOCK Eve. The DOAXVV Slipstream CNS costume
+# declares "FitMeshType": "Body" and ships its own PhysicsAsset, so while it is
+# equipped these numbers describe a body that is not on screen. The fix is
+# K2_GetClosestPointOnPhysicsAsset, which queries whatever is LOADED -- see the
+# `surface` console command. Until that works, treat these as approximate.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+WANT="${1:-}"
+
+{ ./sblove bones Bip001- 2>/dev/null; ./sblove bones Breast 2>/dev/null; } |
+python3 -c "
+import sys, re, math
+want = '''$WANT'''.strip()
+d = {}
+for l in sys.stdin:
+    m = re.match(r'\s*\[\s*\d+\]\s+(\S+)\s+\(([^)]*)\)', l)
+    if m:
+        try: d[m.group(1)] = tuple(float(x) for x in m.group(2).split(','))
+        except ValueError: pass
+
+def sub(a,b): return tuple(x-y for x,y in zip(a,b))
+def add(a,b): return tuple(x+y for x,y in zip(a,b))
+def mul(a,s): return tuple(x*s for x in a)
+def dot(a,b): return sum(x*y for x,y in zip(a,b))
+def ln(v): return math.sqrt(sum(c*c for c in v))
+def norm(v):
+    n = ln(v); return tuple(c/n for c in v) if n else v
+def cross(a,b): return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
+
+need = ('Bip001-Spine1','Bip001-Spine2','Bip001-Pelvis',
+        'Bip001-R-UpperArm','Bip001-L-UpperArm','Ab-R-Breast','Ab-L-Breast')
+miss = [b for b in need if b not in d]
+if miss:
+    print('  missing bones: ' + ', '.join(miss)); raise SystemExit(1)
+
+up  = norm(sub(d['Bip001-Spine2'], d['Bip001-Spine1']))
+rt  = norm(sub(d['Bip001-R-UpperArm'], d['Bip001-L-UpperArm']))
+rt  = norm(sub(rt, mul(up, dot(rt, up))))       # orthonormalise
+fwd = norm(cross(rt, up))
+
+def radial(point, a, b):
+    '''Outward direction from the a-b axis to point: correct as she twists.'''
+    ab = sub(b, a); ap = sub(point, a)
+    t = dot(ap, ab) / dot(ab, ab) if dot(ab, ab) else 0.0
+    axis = add(a, mul(ab, max(0.0, min(1.0, t))))
+    r = sub(point, axis)
+    return norm(r) if ln(r) > 1e-6 else fwd
+
+BREAST_R, PELVIS_R = 4.70, 11.00      # from --bodies
+s1, s2, pel = d['Bip001-Spine1'], d['Bip001-Spine2'], d['Bip001-Pelvis']
+
+anchors = {}
+for side, bone in (('right','Ab-R-Breast'), ('left','Ab-L-Breast')):
+    b = d[bone]
+    out = radial(b, s1, s2)
+    anchors['breast.' + side] = b
+    anchors['nipple.' + side] = add(b, mul(out, BREAST_R))
+# Pelvis anchors: down the body, forward or back. No bones exist for these.
+down = mul(up, -1.0)
+anchors['vagina'] = add(pel, add(mul(down, PELVIS_R*0.35), mul(fwd,  PELVIS_R*0.55)))
+anchors['rectum'] = add(pel, add(mul(down, PELVIS_R*0.35), mul(fwd, -PELVIS_R*0.55)))
+
+if want:
+    p = anchors.get(want)
+    if not p: print('  no such anchor: ' + want); raise SystemExit(1)
+    print('%.2f %.2f %.2f' % p); raise SystemExit(0)
+
+print('  tier 1 anchors (world position, and offset from the breast bone)')
+ref = d['Ab-R-Breast']
+for k in ('nipple.right','breast.right','nipple.left','breast.left','vagina','rectum'):
+    p = anchors[k]
+    v = sub(p, ref)
+    print('    %-14s (%9.1f,%9.1f,%8.1f)   %+6.1f %+6.1f %+6.1f from Ab-R-Breast'
+          % (k, p[0], p[1], p[2], dot(v,rt), dot(v,up), dot(v,fwd)))
+"

@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+"""Put her right hand on a target. Closed loop, measured Jacobian.
+
+    ./magnet <lateral> <up> <forward>     offsets from Ab-R-Breast, cm
+    ./magnet --shoulder <r> <u> <f>       target relative to the shoulder
+    ./magnet --seed p y r flex            start from specific angles
+
+The target is BONE-RELATIVE, so it follows her body. "6 cm outboard of the
+breast bone, 2 below, 9 in front" stays true while she breathes or shifts
+weight. A joint angle does not.
+
+WHY THE GAME IS THE FORWARD MODEL
+An analytic model was built and calibrated first. It kept being subtly wrong
+about conventions in ways that only showed up downstream:
+
+  * composing rotations in its own order put the hand on target and the ELBOW
+    13 cm from where it predicted;
+  * fitting the bone frame to measurements gave det = -1, a reflection, because
+    the engine is left-handed and the quaternion sense does not carry over;
+  * the best fit still left 9.7 degrees of residual, which is ~8 cm at the wrist.
+
+Measuring the Jacobian in game side-steps every one of those. Four probes give
+d(hand)/d(angle) directly, and it cannot disagree with the engine about
+handedness, euler order, or rest pose. Slower per solve, but it converges, and
+the result is baked once into keys.
+
+FLEX IS NEGATIVE: negative flex bends the forearm forward, the only direction an
+elbow goes.
+"""
+
+import math
+import re
+import subprocess
+import sys
+
+HERE = __file__.rsplit('/', 1)[0] or '.'
+
+# HER BODY, from CH_P_EVE_01_Physics via --bodies. Capsule = segment + radius.
+#
+# Without this the solver knew exactly ONE sphere -- her breast -- so nothing
+# stopped it routing the hand through her chest. At the confirmed contact pose
+# the hand measured 4.27 cm INSIDE Bip001-Spine1.
+#
+# The trap: her torso capsule (Spine1, r=10.37) is BIGGER than her breast sphere
+# (r=4.70) and largely encloses it, so a palm placed on the breast surface sits
+# inside her chest. Contact has to mean "on the outside of every body part",
+# which is what this makes measurable.
+BODY = [
+    ('Bip001-Pelvis',  'Bip001-Spine',  11.00),
+    ('Bip001-Spine',   'Bip001-Spine1',  9.17),
+    ('Bip001-Spine1',  'Bip001-Spine2', 10.37),
+    ('Bip001-Spine2',  'Bip001-Neck',    6.90),
+    ('Bip001-Neck',    'Bip001-Head',    6.72),
+    ('Bip001-R-Thigh', 'Bip001-R-Calf',  7.30),
+]
+HAND_RADIUS = 2.73        # Bip001-R-Hand capsule, same source
+KNUCKLES = ('Bip001-R-Finger1', 'Bip001-R-Finger2',
+            'Bip001-R-Finger3', 'Bip001-R-Finger4')
+BONES = ('Bip001-Spine1', 'Bip001-Spine2', 'Bip001-R-UpperArm', 'Bip001-L-UpperArm',
+         'Bip001-R-Forearm', 'Bip001-R-Hand', 'Ab-R-Breast') + KNUCKLES
+BODY_BONES = tuple({b for pair in BODY for b in pair[:2]})
+
+
+def sh(cmd):
+    return subprocess.run(cmd, cwd=HERE, capture_output=True, text=True).stdout
+
+
+def seg_dist(p, a, b):
+    ab = sub(b, a); ap = sub(p, a)
+    L2 = dot(ab, ab)
+    t = 0.0 if L2 == 0 else max(0.0, min(1.0, dot(ap, ab) / L2))
+    c = tuple(a[i] + ab[i] * t for i in range(3))
+    return math.sqrt(sum(x * x for x in sub(p, c)))
+
+
+def clearance(d, point):
+    """Smallest gap from `point` to her body surface. Negative means buried."""
+    worst = None
+    for a, b, rad in BODY:
+        if a not in d or b not in d:
+            continue
+        gap = seg_dist(point, d[a], d[b]) - rad - HAND_RADIUS
+        if worst is None or gap < worst:
+            worst = gap
+    return worst if worst is not None else 999.0
+
+
+def read_bones(filters=('Bip001-Spine', 'UpperArm', 'Bip001-R-', 'Breast')):
+    out = ''
+    for f in filters:
+        out += sh(['./sblove', 'bones', f])
+    d = {}
+    for line in out.splitlines():
+        m = re.match(r'\s*\[\s*\d+\]\s+(\S+)\s+\(([^)]*)\)', line)
+        if m:
+            try:
+                d[m.group(1)] = tuple(float(x) for x in m.group(2).split(','))
+            except ValueError:
+                pass
+    return d
+
+
+def sub(a, b): return tuple(x - y for x, y in zip(a, b))
+def dot(a, b): return sum(x * y for x, y in zip(a, b))
+def mul(a, s): return tuple(x * s for x in a)
+
+
+def norm(v):
+    n = math.sqrt(sum(c * c for c in v))
+    return tuple(c / n for c in v) if n else v
+
+
+def cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def frame(d):
+    """Her body frame, orthonormalised.
+
+    `up` comes from the spine and `rt` from the SHOULDER JOINTS, 22.9 cm apart --
+    not the clavicles, which are only 4.8 cm apart and made the target wander
+    2.7 cm between samples. Gram-Schmidt because the two are not perpendicular,
+    and projecting onto a skewed basis made the 24.2 cm upper arm measure 24.1
+    in one pose and 25.9 in another.
+    """
+    up = norm(sub(d['Bip001-Spine2'], d['Bip001-Spine1']))
+    rt = norm(sub(d['Bip001-R-UpperArm'], d['Bip001-L-UpperArm']))
+    rt = norm(sub(rt, mul(up, dot(rt, up))))
+    return rt, up, norm(cross(rt, up))
+
+
+def probe(angles, static=None):
+    """Apply angles, then report (hand, elbow, target) in her body frame.
+
+    `static` carries the bones that DO NOT move when tracks 48/49 change --
+    spine, left shoulder, breast. Re-reading them on every probe cost three
+    extra queries at 2 s each, which is most of the solve time. They are read
+    once per iteration instead.
+    """
+    p, y, r, f = angles
+    sh(['./pose', '48', f'{p:.3f}', f'{y:.3f}', f'{r:.3f}'])
+    sh(['./pose', '49', '0', '0', f'{f:.3f}'])
+    d = dict(static) if static else {}
+    d.update(read_bones(('Bip001-R-',)) if static else read_bones())
+    if not all(b in d for b in BONES):
+        return None
+    rt, up, fwd = frame(d)
+    o = d['Bip001-R-UpperArm']
+
+    def body(pt):
+        v = sub(pt, o)
+        return (dot(v, rt), dot(v, up), dot(v, fwd))
+
+    # THE PALM, not the wrist.
+    #
+    # Bip001-R-Hand is the wrist JOINT, and the palm sits about 8 cm further
+    # along the hand. Solving the wrist onto her breast therefore carries the
+    # palm and fingers straight past it -- on screen the forearm crosses her
+    # chest and the hand overshoots beyond and above, touching nothing. Every
+    # waypoint measured 0.5-1.6 cm and every one of them was solving for the
+    # wrong point.
+    #
+    # A cupping hand touches with the PALM, so that is what gets aimed: halfway
+    # from the wrist to the middle of the knuckles.
+    wrist = d['Bip001-R-Hand']
+    knuck = tuple(sum(c) / 4.0 for c in zip(*(d[b] for b in KNUCKLES)))
+    palm = tuple(wrist[i] + 0.5 * (knuck[i] - wrist[i]) for i in range(3))
+    # Clearance is reported in WORLD space, where the capsules live.
+    return (body(palm), body(d['Bip001-R-Forearm']), body(d['Ab-R-Breast']),
+            clearance(d, palm))
+
+
+def solveN(A, b):
+    n = len(b)
+    M = [A[i][:] + [b[i]] for i in range(n)]
+    for c in range(n):
+        pv = max(range(c, n), key=lambda i: abs(M[i][c]))
+        if abs(M[pv][c]) < 1e-12:
+            return None
+        M[c], M[pv] = M[pv], M[c]
+        for i in range(c + 1, n):
+            fq = M[i][c] / M[c][c]
+            for j in range(c, n + 1):
+                M[i][j] -= fq * M[c][j]
+    x = [0.0] * n
+    for i in reversed(range(n)):
+        x[i] = (M[i][n] - sum(M[i][j] * x[j] for j in range(i + 1, n))) / M[i][i]
+    return x
+
+
+def main():
+    args = sys.argv[1:]
+    from_shoulder = False
+    # Seed: the authored Proto_Idle_Social frame 313 pose, which measured
+    # anatomically sound (palm 13.5 deg off cupping, wrist bent 29.6).
+    seed = [-11.58, 63.90, 2.78, -118.29]
+    if '--shoulder' in args:
+        from_shoulder = True; args.remove('--shoulder')
+    if '--seed' in args:
+        i = args.index('--seed'); seed = [float(x) for x in args[i + 1:i + 5]]
+        del args[i:i + 5]
+    args = [a for a in args if a != '--quiet']
+    off = [float(x) for x in (args + ['6', '-2', '9'])[:3]]
+
+    ang = seed[:]
+    step = 6.0            # degrees, for the finite-difference Jacobian
+    tol = 1.0             # cm; the breast has volume, sub-cm is meaningless
+    # KEEP THE BEST POSE SEEN, not the last one tried. Gauss-Newton on a
+    # measured Jacobian is not monotonic: one solve reached 1.12 cm at iteration
+    # 8 and wandered to 46.39 by iteration 10, and returning the last angles
+    # threw the good answer away. Every non-converged solve this session
+    # reported its worst step rather than its best.
+    best_ang, best_miss = ang[:], float('inf')
+
+    for it in range(1, 11):   # 6 was not enough: the null-space solve was still
+                              # improving both hand and elbow when it ran out
+        # Static bones, read once per iteration rather than once per probe.
+        static = read_bones(('Bip001-Spine', 'UpperArm', 'Breast', 'Bip001-Neck',
+                             'Bip001-Head', 'Bip001-Pelvis', 'Bip001-R-Thigh',
+                             'Bip001-R-Calf'))
+        base = probe(ang, static)
+        if base is None:
+            print('could not read bones; is the game running?'); return 1
+        hand, elbow, brs, gap = base
+        goal = off if from_shoulder else tuple(brs[i] + off[i] for i in range(3))
+        err = sub(goal, hand)
+        dist = math.sqrt(sum(c * c for c in err))
+        print(f'  iter {it}  48:({ang[0]:7.2f}{ang[1]:7.2f}{ang[2]:7.2f}) 49:{ang[3]:7.2f}'
+              f'   miss {dist:5.2f} cm  gap {gap:+5.2f}  drop {-elbow[1]:5.1f} flare {elbow[0]:5.1f}',
+              flush=True)
+        # Score both: a pose on target but 4 cm inside her chest is not a
+        # solution. Penetration is penalised hard because it is always visible.
+        score = dist + max(0.0, -gap) * 3.0
+        if score < best_miss:
+            best_ang, best_miss = ang[:], score
+        if dist < tol and gap > -0.3:
+            print('  converged'); break
+
+        # Jacobians, measured in game. Four probes; nothing here can disagree
+        # with the engine about handedness or euler order.
+        Jp, Je, Jg = [], [], []  # d(hand)/d(angle), d(flare)/d(angle), d(gap)/d(angle)
+        for k in range(4):
+            a2 = ang[:]; a2[k] += step
+            p2 = probe(a2, static)
+            if p2 is None:
+                print('  probe failed'); return 1
+            Jp.append([(p2[0][i] - hand[i]) / step for i in range(3)])
+            Je.append((p2[1][0] - elbow[0]) / step)
+            Jg.append((p2[3] - gap) / step)
+
+        # FOUR angles, THREE position constraints: one degree of freedom is
+        # free. The arm can swivel about the shoulder-to-hand line with the hand
+        # staying exactly put, and that swivel does not sit still by itself.
+        #
+        # Adding the elbow as a fourth weighted RESIDUAL does not work: three
+        # strong position terms outvote one weak elbow term, and the solver just
+        # pays the penalty. That produced a hand correct to 0.85 cm with the
+        # elbow at flare +20.5 -- a chicken wing.
+        #
+        # So the elbow lives in the NULL SPACE instead, where by construction it
+        # cannot fight position:
+        #
+        #     dx = J+ . err        +   (I - J+ J) . preference
+        #          ^ hits the target    ^ uses the leftover freedom only
+        #
+        # J+ = J^T (J J^T + lam I)^-1, the damped right pseudo-inverse, which is
+        # the correct one for a wide Jacobian (3 rows, 4 columns).
+        lam = 0.05
+        JJt = [[sum(Jp[k][i] * Jp[k][j] for k in range(4)) + (lam if i == j else 0.0)
+                for j in range(3)] for i in range(3)]
+        w = solveN(JJt, list(err))
+        if w is None:
+            print('  singular; stopping'); break
+        dx = [sum(Jp[k][i] * w[i] for i in range(3)) for k in range(4)]
+
+        # Null-space term: push the elbow toward FLARE_WANT with whatever
+        # freedom is left over after the hand is satisfied.
+        #
+        # Scaled as a proper least-squares step, Je * d / (Je.Je), NOT Je * d.
+        # The raw form has no units: with a flare error of ~18 cm it asked for
+        # roughly 8 degrees on every angle at once, which is large enough to
+        # leave the region where the measured Jacobian is valid.
+        # GATED on position error. A null-space step cannot move the hand in
+        # theory, but the Jacobian is only valid LOCALLY, so a big swivel step
+        # leaves the linear region and wrecks position anyway. Ungated, this
+        # solved one waypoint to 1.58 cm and blew the next one to 39.09.
+        #
+        # So: converge the hand first, and only spend the swivel once the hand
+        # is close enough that the linearisation still holds. Position is never
+        # traded away for the elbow.
+        # The free swivel is spent on whichever matters more: getting the hand
+        # OUT of her body if it is buried, otherwise tucking the elbow.
+        FLARE_WANT, GAIN, GATE = 2.0, 0.35, 6.0
+        pref = [0.0] * 4
+        if dist < GATE and gap < 0.0:
+            jj = sum(v * v for v in Jg) + 1e-6
+            pref = [Jg[k] * (0.5 - gap) / jj * GAIN for k in range(4)]
+        elif dist < GATE:
+            jj = sum(v * v for v in Je) + 1e-6
+            d_flare = FLARE_WANT - elbow[0]
+            pref = [Je[k] * d_flare / jj * GAIN for k in range(4)]
+            # Never let the preference outrun the task step it rides on.
+            big = max(abs(v) for v in pref)
+            if big > 8.0:
+                pref = [v * 8.0 / big for v in pref]
+        v = solveN(JJt, [sum(Jp[k][i] * pref[k] for k in range(4)) for i in range(3)])
+        if v is not None:
+            proj = [sum(Jp[k][i] * v[i] for i in range(3)) for k in range(4)]
+            dx = [dx[k] + pref[k] - proj[k] for k in range(4)]
+        # Cap the step so one bad Jacobian cannot throw the arm across the room.
+        big = max(abs(v) for v in dx)
+        if big > 25.0:
+            dx = [v * 25.0 / big for v in dx]
+        ang = [ang[i] + dx[i] for i in range(4)]
+        ang[3] = max(-165.0, min(-5.0, ang[3]))      # elbows bend one way only
+
+    # Re-apply and report the BEST pose found, not wherever the search ended up.
+    if best_ang != ang:
+        print(f'  best was {best_miss:.2f} cm; re-applying it', flush=True)
+        probe(best_ang)
+    ang = best_ang
+    print(f'  final miss {best_miss:.2f} cm', flush=True)
+    # Machine-readable, so ./bake can collect a whole path of these and hand
+    # them to --emitanim as waypoints.
+    print(f'SOLVED {ang[0]:.3f} {ang[1]:.3f} {ang[2]:.3f} {ang[3]:.3f}', flush=True)
+    if '--quiet' not in sys.argv:
+        print()
+        print(sh(['./measure']))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

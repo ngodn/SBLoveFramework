@@ -101,6 +101,25 @@ def clearance(d, point):
     return worst if worst is not None else 999.0
 
 
+def anim_instance():
+    """Which anim instance the console is talking to right now.
+
+    A LEVEL CHANGE SWAPS THE PAWN, and with it every address the solve depends
+    on. It happened mid-bake: the pawn went from Lobby.LOBBY to Matrix_XI and
+    the instance from 0x6FF10000 to 0xD28D0000, after which the solve was
+    measuring a character that no longer existed. It read miss 51.51 cm with
+    the palm 19.88 cm clear of her body, wandered seven iterations, and only
+    stopped when the bones stopped reading at all.
+
+    The patch acknowledgement cannot catch this. It proves the patch was
+    applied; it says nothing about WHICH pawn was then measured. So the
+    identity gets checked directly, once per iteration -- one console call
+    against roughly thirty seconds of probing.
+    """
+    m = re.search(r'anim instance:\s*(0x[0-9A-Fa-f]+)', sh(['./sblove', 'status']))
+    return m.group(1) if m else None
+
+
 def read_bones(filters=('Bip001-Spine', 'UpperArm', 'Bip001-R-', 'Breast')):
     out = ''
     for f in filters:
@@ -236,12 +255,29 @@ def main():
     best_ang, best_key, best_miss = ang[:], (2, float('inf')), float('inf')
     settled = 0
 
+    # Whose skeleton this solve is about. Anything measured against a different
+    # instance is not a worse answer, it is an answer to a different question.
+    who = anim_instance()
+    if who is None:
+        print('  no anim instance; is the game running?'); return 1
+
     for it in range(1, 15):   # 6 was not enough: the null-space solve was still
                               # improving both hand and elbow when it ran out.
                               # 10 was not enough either, once the loop stopped
                               # breaking the instant position landed: tidying the
                               # elbow needs iterations of its own, and they only
                               # begin after the hand has arrived.
+        # STOP if the pawn changed under us. Cheaper to check than to spend
+        # another iteration solving against someone else's skeleton, and the
+        # failure is otherwise very hard to read: plausible-looking angles,
+        # implausible distances, no error anywhere.
+        now = anim_instance()
+        if now != who:
+            raise PoseFailed(
+                f'the pawn changed mid-solve ({who} -> {now}). A level load or '
+                'a cutscene swaps the anim instance, and every measurement '
+                'after it describes a different character.')
+
         # Static bones, read once per iteration rather than once per probe.
         static = read_bones(('Bip001-Spine', 'UpperArm', 'Breast', 'Bip001-Neck',
                              'Bip001-Head', 'Bip001-Pelvis', 'Bip001-R-Thigh',

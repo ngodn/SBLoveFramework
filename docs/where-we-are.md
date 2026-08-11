@@ -78,6 +78,48 @@ returns to rest.
    out-param calling conventions in one pass; needs one restart to settle.
 3. **Deformation.** The only real feature gap.
 
+## DEFORMATION WORKS (route 5, confirmed on screen)
+
+The feature gap is closed. A ModifyBone node's Translation, held every frame by
+the DLL, visibly displaces her breast.
+
+```
+pick AnimGraphNode_ModifyBone_6     alpha 1.00, was on Bip001-Prop1
+bone Ab-R-Breast
+push 8 0 0
+```
+
+8 cm is unmistakable on screen: the breast displaces and the costume cup
+separates from the body. Contact-scale squish will be 1-3 cm.
+
+**THE THING THAT MATTERS, and it cost most of an evening: borrow a node the
+game ACTUALLY EVALUATES.**
+
+`./sblove status` lists seven ModifyBone nodes. Two sit at alpha 0.00 on toe
+bones and look like the obvious ones to borrow, being visibly unused. They are
+unused because THE GRAPH NEVER RUNS THEM. Writes to them land in the struct,
+persist, read back correctly, and do nothing -- the same signature as the
+KawaiiPhysics reroot, and for a completely different reason.
+
+The five at alpha 1.00 (driving `Bip001-Prop1` and `Ab_Drone_Ctl`) are
+evaluated. Borrowing one of those works immediately.
+
+How to tell them apart, since the field values look identical: point the node
+at `Bip001-Head` and ask for `pose 0 60 0`. If her head does not turn, the node
+is not in the graph. This test takes seconds and is worth running before ANY
+experiment on a node.
+
+Two false conclusions were reached before this, and both looked convincing:
+
+| what was seen | what it actually was |
+| --- | --- |
+| one screenshot showing a dramatic displacement | not reproducible; a transient, not the mechanism |
+| bone position read back unchanged at +/-80 | `Where()` cannot see ModifyBone output AT ALL |
+
+`Where()` reads a transform computed before the skeletal controls run, so it is
+useless for verifying this. There is no measurement for deformation. Only the
+screen.
+
 ## Deformation: four routes closed by measurement
 
 | route | why it fails |

@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Which way the right palm faces, in her body axes.
+#
+# The arm solve only ever scored the WRIST POSITION, so the hand orientation was
+# never controlled at all. On screen that reads as fingers splayed forward
+# holding an invisible ball rather than a hand cupping anything, which no
+# distance metric can see. This is the missing instrument.
+#
+# Frame, from the knuckles (Biped naming: Finger0 thumb, Finger1 index,
+# Finger4 pinky):
+#   along   wrist -> middle fingertip     the direction the fingers point
+#   across  index knuckle -> pinky knuckle
+#   normal  cross(across, along)          the direction the PALM faces
+#
+# cross(along, across) is the back of the hand. Check it on a right hand held
+# palm-down with the fingers forward: along = forward, across = right, and
+# forward x right points up, which is the knuckles.
+#
+# For her right hand cupping her right breast from the outside, the palm should
+# face mostly toward the midline (right strongly negative) and somewhat backward
+# into her chest (fwd negative).
+cd "$(dirname "${BASH_SOURCE[0]}")"
+{ ./sblove bones Bip001-Spine 2>/dev/null; ./sblove bones UpperArm 2>/dev/null
+  ./sblove bones Bip001-R- 2>/dev/null; } | python3 -c "
+import sys, math, re
+d={}
+for line in sys.stdin:
+    m=re.match(r'\s*\[\s*\d+\]\s+(\S+)\s+\(([^)]*)\)', line)
+    if m:
+        try: d[m.group(1)]=tuple(float(x) for x in m.group(2).split(','))
+        except ValueError: pass
+need=['Bip001-Spine1','Bip001-Spine2','Bip001-R-UpperArm','Bip001-L-UpperArm',
+      'Bip001-R-Hand','Bip001-R-Finger1','Bip001-R-Finger2','Bip001-R-Finger3','Bip001-R-Finger4',
+      'Bip001-R-Forearm']
+miss=[b for b in need if b not in d]
+if miss: print('  missing:', ', '.join(miss)); raise SystemExit
+def sub(a,b): return tuple(x-y for x,y in zip(a,b))
+def ln(v): return math.sqrt(sum(c*c for c in v))
+def norm(v):
+    l=ln(v); return tuple(c/l for c in v) if l else v
+def cross(a,b): return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
+def dot(a,b): return sum(x*y for x,y in zip(a,b))
+up  = norm(sub(d['Bip001-Spine2'], d['Bip001-Spine1']))
+rt  = norm(sub(d['Bip001-R-UpperArm'], d['Bip001-L-UpperArm']))
+# Gram-Schmidt. up (from the spine) and rt (from the shoulders) are NOT
+# perpendicular, and projecting onto a skewed basis distorts every length:
+# the 24.2 cm upper arm measured 24.1 in one pose and 25.9 in another, which
+# is impossible for a bone. Orthogonalise rt against up before building fwd.
+rt  = norm(sub(rt, tuple(dot(rt, up) * c for c in up)))
+fwd = norm(cross(rt, up))
+def body(v): return dot(v,rt), dot(v,up), dot(v,fwd)
+# Wrist -> middle of the KNUCKLES, not to a fingertip. Running it to
+# Finger2Nub folds however curled the fingers are into what is supposed to
+# measure the wrist, and reported an authored pose as 50.6 deg out of range
+# purely because she was closing her hand.
+knuck = tuple(sum(c)/4.0 for c in zip(
+    d['Bip001-R-Finger1'], d['Bip001-R-Finger2'],
+    d['Bip001-R-Finger3'], d['Bip001-R-Finger4']))
+along  = norm(sub(knuck, d['Bip001-R-Hand']))
+across = norm(sub(d['Bip001-R-Finger4'],    d['Bip001-R-Finger1']))
+palm   = norm(cross(across, along))
+for name, v in (('fingers point', along), ('palm faces', palm)):
+    r,u,f = body(v)
+    print(f'  {name:14s} right {r:+5.2f}  up {u:+5.2f}  fwd {f:+5.2f}')
+r,u,f = body(palm)
+want = (-0.80, 0.15, -0.55)     # toward the midline and back into her chest
+ang = math.degrees(math.acos(max(-1.0, min(1.0, dot((r,u,f), norm(want))))))
+# How far the hand is bent off the forearm. A real wrist manages roughly 80 deg
+# of flexion and 70 of extension, and far less once deviation is mixed in; past
+# that the hand visibly snaps off the arm.
+#
+# Scoring palm direction WITHOUT this is what produced a broken-looking wrist:
+# the sweep was free to pick any huge compound rotation that happened to aim the
+# palm right. Palm direction should come mostly from FOREARM TWIST
+# (pronation/supination), with the wrist staying near neutral.
+fore = norm(sub(d['Bip001-R-Hand'], d['Bip001-R-Forearm']))
+bend = math.degrees(math.acos(max(-1.0, min(1.0, dot(fore, along)))))
+print()
+print(f'  palm is {ang:5.1f} deg off a cupping direction (want under ~30)')
+print(f'  wrist bent {bend:5.1f} deg off the forearm  (want under ~45)')
+if bend > 45: print('  WRIST OUT OF RANGE: this reads as a broken hand on screen')
+"

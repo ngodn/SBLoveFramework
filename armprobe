@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Apply a shoulder+elbow pose and print the resulting geometry on one line.
+#
+#   ./armprobe <sh_pitch> <sh_yaw> <sh_roll> <el_pitch> <el_yaw> <el_roll>
+#
+# FREEZE TIME FIRST:  ./sblove exec "slomo 0.01"
+#
+# This exists so the arm can be SOLVED rather than swept. Blind sweeping over
+# three shoulder angles is thousands of samples, and the sweep that was run that
+# way converged on a pose with the elbow above the shoulder. A handful of
+# samples give a Jacobian, and the Jacobian gives a step.
+#
+# Bones are read with four `bones <filter>` calls rather than eight `where`
+# calls: each `bones` call walks the skeleton once, so it is both half the round
+# trips and internally consistent.
+#
+# Output, all in her body frame relative to Bip001-Spine2, centimetres:
+#   sh_r sh_u sh_f  el_r el_u el_f  hd_r hd_u hd_f  tg_r tg_u tg_f  reach drop flare
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+SP="${1:?usage: ./armprobe sh_p sh_y sh_r el_p el_y el_r}"; SY="$2"; SR="$3"
+EP="$4"; EY="$5"; ER="$6"
+
+./pose 48 "$SP" "$SY" "$SR" >/dev/null 2>&1 || { echo "shoulder patch failed" >&2; exit 1; }
+./pose 49 "$EP" "$EY" "$ER" >/dev/null 2>&1 || { echo "elbow patch failed"    >&2; exit 1; }
+
+for f in Bip001-Spine UpperArm Bip001-R- Breast; do ./sblove bones "$f" 2>/dev/null; done \
+| python3 -c "
+import sys, math, re
+d={}
+for line in sys.stdin:
+    m=re.match(r'\s*\[\s*\d+\]\s+(\S+)\s+\(([^)]*)\)', line)
+    if m:
+        try: d[m.group(1)]=tuple(float(x) for x in m.group(2).split(','))
+        except ValueError: pass
+need=['Bip001-Spine1','Bip001-Spine2','Bip001-R-UpperArm','Bip001-L-UpperArm',
+      'Bip001-R-UpperArm','Bip001-R-Forearm','Bip001-R-Hand','Ab-R-Breast']
+miss=[b for b in need if b not in d]
+if miss: print('missing ' + ','.join(miss)); raise SystemExit(1)
+def sub(a,b): return tuple(x-y for x,y in zip(a,b))
+def ln(v): return math.sqrt(sum(c*c for c in v))
+def norm(v):
+    l=ln(v); return tuple(c/l for c in v) if l else v
+def cross(a,b): return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
+def dot(a,b): return sum(x*y for x,y in zip(a,b))
+up  = norm(sub(d['Bip001-Spine2'], d['Bip001-Spine1']))
+rt  = norm(sub(d['Bip001-R-UpperArm'], d['Bip001-L-UpperArm']))
+# Gram-Schmidt. up (from the spine) and rt (from the shoulders) are NOT
+# perpendicular, and projecting onto a skewed basis distorts every length:
+# the 24.2 cm upper arm measured 24.1 in one pose and 25.9 in another, which
+# is impossible for a bone. Orthogonalise rt against up before building fwd.
+rt  = norm(sub(rt, tuple(dot(rt, up) * c for c in up)))
+fwd = norm(cross(rt, up))   # left-handed: forward = right x up
+def body(p):
+    v = sub(p, d['Bip001-Spine2']); return dot(v,rt), dot(v,up), dot(v,fwd)
+sh, el, hd, tg = (body(d[b]) for b in
+    ('Bip001-R-UpperArm','Bip001-R-Forearm','Bip001-R-Hand','Ab-R-Breast'))
+reach = ln(sub(d['Bip001-R-Hand'], d['Ab-R-Breast']))
+print(' '.join(f'{v:.1f}' for v in (*sh,*el,*hd,*tg, reach, sh[1]-el[1], el[0]-sh[0])))
+"

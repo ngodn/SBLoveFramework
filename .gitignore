@@ -15,3 +15,17 @@ scratch/
 # native build output
 native/build/
 native/deps/
+
+# Extracted game data. 95 MB of Stellar Blade's own assets, pulled out with
+# retoc so the tools have byte offsets to compute against. Reproducible from the
+# shipped paks by anyone who owns the game, and not ours to redistribute.
+assets/
+
+# Reference footage frames, extracted from commercial releases for animation
+# study. Not ours to redistribute either. The solve outputs beside them
+# (reference/path*.txt) ARE ours and are tracked.
+reference/frames/
+reference/sheets/
+
+__pycache__/
+.playwright-mcp/

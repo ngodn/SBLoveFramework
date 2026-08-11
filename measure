@@ -1,19 +1,28 @@
 #!/usr/bin/env bash
-# Hand position relative to the chest, in the body's own axes.
-# World coordinates are meaningless here because she can face any direction.
+# Score the right-arm pose against her actual breast bone, in her own body axes.
 #
 # FREEZE TIME FIRST:  ./sblove exec "slomo 0.01"
 #
-# This reads five bones with five separate calls, about a second apart. While
-# the animation plays, the spine and clavicles move between reads, so the body
-# frame is assembled from bones sampled at different moments and the result
+# Each bone is a separate call about a second apart. While the animation plays
+# the frame is assembled from bones sampled at different moments and the result
 # swings wildly: 47.5, 42.1, 31.0, 5.4 on four consecutive runs of an unchanged
-# pose. Frozen, the same pose reads 6.4, 6.4, 6.4.
+# pose. Frozen, the same pose repeats to 0.1 cm.
 #
-# An early sweep was run without freezing, and its apparent convergence was
-# partly luck.
+# TWO THINGS THIS SCORES, because scoring only the first produced a pose that
+# read 6.1 cm and looked like a chicken wing on screen:
+#
+#   1. hand -> Ab-R-Breast.  The target is bone 128, read live. An earlier
+#      version compared against hardcoded (right 10, up 4, fwd 12), which was a
+#      guess with nothing behind it.
+#   2. elbow vs shoulder.  A wrist can reach the target from an anatomically
+#      absurd arm configuration, and an optimiser that only scores the endpoint
+#      will happily find one. In the pose that scored 6.1 cm the elbow sat
+#      12.5 cm ABOVE the shoulder and 15 cm outboard of it. A real self-touch
+#      has the upper arm hanging down the ribs: elbow well below the shoulder
+#      and tucked in, not flared.
 cd "$(dirname "${BASH_SOURCE[0]}")"
-for b in Bip001-Spine1 Bip001-Spine2 Bip001-R-Clavicle Bip001-L-Clavicle Bip001-R-Hand; do
+for b in Bip001-Spine1 Bip001-Spine2 Bip001-L-UpperArm \
+         Bip001-R-UpperArm Bip001-R-Forearm Bip001-R-Hand Ab-R-Breast; do
     printf "%s " "$b"; ./sblove where $b 2>/dev/null | sed 's/.*(//;s/)//'
 done | python3 -c "
 import sys, math
@@ -22,20 +31,51 @@ for line in sys.stdin:
     n,_,v=line.strip().partition(' ')
     try: d[n.strip()]=tuple(float(x) for x in v.split(','))
     except: pass
-if len(d)<5: print('  incomplete read'); raise SystemExit
+need=['Bip001-Spine1','Bip001-Spine2','Bip001-R-UpperArm','Bip001-L-UpperArm',
+      'Bip001-R-UpperArm','Bip001-R-Forearm','Bip001-R-Hand','Ab-R-Breast']
+missing=[b for b in need if b not in d]
+if missing: print('  missing:', ', '.join(missing)); raise SystemExit
 def sub(a,b): return tuple(x-y for x,y in zip(a,b))
 def ln(v): return math.sqrt(sum(c*c for c in v))
 def norm(v):
     l=ln(v); return tuple(c/l for c in v) if l else v
 def cross(a,b): return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
 def dot(a,b): return sum(x*y for x,y in zip(a,b))
-up   = norm(sub(d['Bip001-Spine2'], d['Bip001-Spine1']))
-rt   = norm(sub(d['Bip001-R-Clavicle'], d['Bip001-L-Clavicle']))
-fwd  = norm(cross(up, rt))
-v    = sub(d['Bip001-R-Hand'], d['Bip001-Spine2'])
-r,u,f = dot(v,rt), dot(v,up), dot(v,fwd)
-# Target: her right breast. Right of centre, a little above spine2, in front.
-tr,tu,tf = 10.0, 4.0, 12.0
-err = math.sqrt((tr-r)**2 + (tu-u)**2 + (tf-f)**2)
-print(f'  hand  right {r:+6.1f}  up {u:+6.1f}  fwd {f:+6.1f}   error {err:5.1f} cm')
+up  = norm(sub(d['Bip001-Spine2'], d['Bip001-Spine1']))
+rt  = norm(sub(d['Bip001-R-UpperArm'], d['Bip001-L-UpperArm']))
+# Gram-Schmidt. up (from the spine) and rt (from the shoulders) are NOT
+# perpendicular, and projecting onto a skewed basis distorts every length:
+# the 24.2 cm upper arm measured 24.1 in one pose and 25.9 in another, which
+# is impossible for a bone. Orthogonalise rt against up before building fwd.
+rt  = norm(sub(rt, tuple(dot(rt, up) * c for c in up)))
+# cross(rt, up), NOT cross(up, rt). Unreal is left-handed -- X forward, Y right,
+# Z up -- so forward = right x up. With the operands the other way round every
+# fwd reading came out negated, which put Ab-R-Breast 4.7 cm BEHIND the spine.
+# A breast bone behind the ribcage is what caught it; the head at -2.0 and the
+# hanging left hand at +6.4 were both small enough to look plausible.
+fwd = norm(cross(rt, up))
+def body(p):
+    v = sub(p, d['Bip001-Spine2'])
+    return dot(v,rt), dot(v,up), dot(v,fwd)
+sh   = body(d['Bip001-R-UpperArm'])
+el   = body(d['Bip001-R-Forearm'])
+hd   = body(d['Bip001-R-Hand'])
+tg   = body(d['Ab-R-Breast'])
+for name, p in (('shoulder',sh),('elbow',el),('hand',hd),('breast',tg)):
+    print(f'  {name:9s} right {p[0]:+6.1f}  up {p[1]:+6.1f}  fwd {p[2]:+6.1f}')
+reach = ln(sub(d['Bip001-R-Hand'], d['Ab-R-Breast']))
+drop  = sh[1] - el[1]          # want the elbow BELOW the shoulder
+flare = el[0] - sh[0]          # want the elbow tucked in, not swung outboard
+print()
+print(f'  reach  {reach:5.1f} cm   hand to breast bone')
+print(f'  drop   {drop:+5.1f} cm   elbow below shoulder  (want +18 to +25)')
+print(f'  flare  {flare:+5.1f} cm   elbow outboard of shoulder  (want -2 to +6)')
+bad=[]
+if drop  < 12: bad.append('elbow too high: the upper arm should hang down the ribs')
+if flare >  9: bad.append('elbow flared out: chicken wing')
+# BOTH directions. Only checking the upper bound reported 'OK' for an elbow
+# tucked 9.8 cm INBOARD, driven across her torso by the arm's free swivel.
+if flare < -4: bad.append('elbow tucked inboard: the upper arm is crossing her torso')
+print()
+print('  ' + ('OK' if not bad else '\n  '.join(bad)))
 "

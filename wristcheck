@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# How far a wrist rotation twists the hand about the forearm axis.
+#
+#   ./wristcheck <pitch> <yaw> <roll>
+#
+# A real wrist has essentially ZERO axial rotation. Turning the palm over is
+# pronation and supination in the FOREARM, not the wrist. But track 49 (forearm)
+# has mask 0x1, so it can only store rotation about X, which is pure flexion
+# with no twist available. Every bit of palm orientation therefore has to come
+# from the wrist track, and that is exactly how a hand ends up looking snapped
+# off the arm.
+#
+# ./palm scores palm DIRECTION, and the bend check added alongside it scores how
+# far the hand is folded off the forearm. Neither can see axial twist: a hand
+# can be rotated 90 degrees about the forearm axis with the fingers still
+# pointing the same way, scoring perfectly on both while looking broken.
+#
+# Neutral reference is wrist (0,0,0), where the hand follows the forearm the way
+# the animator posed it.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+frame() {
+    ./sblove bones Bip001-R- 2>/dev/null | python3 -c '
+import sys, re
+d = {}
+for l in sys.stdin:
+    m = re.match(r"\s*\[\s*\d+\]\s+(\S+)\s+\(([^)]*)\)", l)
+    if m: d[m.group(1)] = m.group(2)
+for b in ("Bip001-R-Forearm","Bip001-R-Hand","Bip001-R-Finger1","Bip001-R-Finger4"):
+    print(d.get(b, ""))
+'
+}
+
+./pose 50 0 0 0 >/dev/null 2>&1;              NEU="$(frame)"
+./pose 50 "$1" "$2" "$3" >/dev/null 2>&1;     CUR="$(frame)"
+
+printf '%s\n---\n%s\n' "$NEU" "$CUR" | python3 -c '
+import sys, math
+neu, cur = sys.stdin.read().split("---")
+def parse(b): return [tuple(float(x) for x in l.split(",")) for l in b.strip().split("\n")]
+def sub(a,b): return tuple(x-y for x,y in zip(a,b))
+def ln(v): return math.sqrt(sum(c*c for c in v))
+def norm(v):
+    l = ln(v); return tuple(c/l for c in v) if l else v
+def dot(a,b): return sum(x*y for x,y in zip(a,b))
+def frame_of(f):
+    fore, hand, idx, pnk = f
+    ax = norm(sub(hand, fore))                                  # forearm axis
+    ac = sub(pnk, idx)                                          # across the palm
+    ac = sub(ac, tuple(dot(ac, ax) * c for c in ax))            # perpendicular part
+    return ax, norm(ac)
+try:
+    ax0, a0 = frame_of(parse(neu))
+    ax1, a1 = frame_of(parse(cur))
+except (ValueError, IndexError):
+    print("  incomplete read"); raise SystemExit
+tw = math.degrees(math.acos(max(-1.0, min(1.0, dot(a0, a1)))))
+print(f"  hand twisted {tw:5.1f} deg about the forearm axis vs neutral")
+print("  a real wrist does ~0 of this. past ~25 it reads as a broken hand.")
+'

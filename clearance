@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# How far the arm is INSIDE her body, using her own collision capsules.
+#
+# The magnet only ever knew ONE sphere -- her breast -- so nothing stopped the
+# solve from routing the hand and forearm straight through her torso. Contact
+# was solved; the body in the way was not modelled at all.
+#
+# CH_P_EVE_01_Physics describes all of her: 36 bodies, capsules with real radii
+# per bone. Combined with live bone positions that gives a body model at any
+# pose, and penetration becomes arithmetic instead of something only visible on
+# screen.
+#
+# MEASURES THE PALM, not just the wrist. ./magnet targets the palm centre, 4 cm
+# further along the hand than Bip001-R-Hand, so the two disagreed: placing the
+# palm on her surface leaves the WRIST 4 cm deeper, and pushing the palm further
+# out radially drags the wrist in behind it. The guard rejected poses the solver
+# considered good, and pushing harder made it worse.
+#
+# Radii here are read from --bodies, not invented.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+{ ./sblove bones Bip001- 2>/dev/null; ./sblove bones Ab-R-Breast 2>/dev/null; } |
+python3 -c "
+import sys, re, math
+d = {}
+for l in sys.stdin:
+    m = re.match(r'\s*\[\s*\d+\]\s+(\S+)\s+\(([^)]*)\)', l)
+    if m:
+        try: d[m.group(1)] = tuple(float(x) for x in m.group(2).split(','))
+        except ValueError: pass
+
+def sub(a,b): return tuple(x-y for x,y in zip(a,b))
+def dot(a,b): return sum(x*y for x,y in zip(a,b))
+
+def seg_dist(p, a, b):
+    '''Distance from p to the segment ab -- a capsule is a segment plus radius.'''
+    ab = sub(b, a); ap = sub(p, a)
+    L2 = dot(ab, ab)
+    t = 0.0 if L2 == 0 else max(0.0, min(1.0, dot(ap, ab) / L2))
+    c = tuple(a[i] + ab[i]*t for i in range(3))
+    return math.sqrt(sum(x*x for x in sub(p, c)))
+
+# bone, its child (the capsule runs between them), radius from the physics asset
+BODY = [
+    ('Bip001-Pelvis', 'Bip001-Spine',  11.00),
+    ('Bip001-Spine',  'Bip001-Spine1',  9.17),
+    ('Bip001-Spine1', 'Bip001-Spine2', 10.37),
+    ('Bip001-Spine2', 'Bip001-Neck',    6.90),
+    ('Bip001-Neck',   'Bip001-Head',    6.72),
+    ('Bip001-R-Thigh','Bip001-R-Calf',  7.30),
+    ('Bip001-L-Thigh','Bip001-L-Calf',  7.30),
+]
+K = ('Bip001-R-Finger1','Bip001-R-Finger2','Bip001-R-Finger3','Bip001-R-Finger4')
+PROBES = []
+if 'Bip001-R-Hand' in d and all(k in d for k in K):
+    w = d['Bip001-R-Hand']
+    kn = tuple(sum(c)/4.0 for c in zip(*(d[k] for k in K)))
+    d['PALM'] = tuple(w[i] + 0.5*(kn[i]-w[i]) for i in range(3))
+    # The palm is what has to sit ON her; the wrist only must not be deeply in.
+    PROBES = [('PALM', 2.20), ('Bip001-R-Hand', 2.73), ('Bip001-R-Forearm', 2.65)]
+
+worst = None
+for pname, prad in PROBES:
+    if pname not in d: continue
+    for a, b, rad in BODY:
+        if a not in d or b not in d: continue
+        gap = seg_dist(d[pname], d[a], d[b]) - rad - prad
+        if worst is None or gap < worst[0]:
+            worst = (gap, pname, a)
+        if gap < 0:
+            print('  %-18s is %5.2f cm INSIDE %s' % (pname, -gap, a))
+if worst:
+    g, p, b = worst
+    print()
+    if g < 0: print('  WORST: %s buried %.2f cm in %s' % (p, -g, b))
+    else:     print('  clear: nearest approach %.2f cm (%s vs %s)' % (g, p, b))
+"

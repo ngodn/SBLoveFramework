@@ -126,6 +126,13 @@ end
 local Picked      = "AnimGraphNode_ModifyBone"
 local OriginalBone = nil
 local Pose = { pitch = 0, yaw = 0, roll = 0, mode = 2, space = 3, alpha = 1.0 }
+--- Contact displacement on the SAME node, held by native alongside the
+--- rotation. mode 0 (BMM_Ignore) means native skips it entirely, so this costs
+--- nothing until a push is actually asked for. Space 1 is component space: a
+--- push into flesh is a direction on her body, and bone space would rotate it
+--- with the bone -- which for a spring-driven breast bone means the push
+--- direction wobbles with the jiggle it is meant to be deforming.
+local Push = { x = 0, y = 0, z = 0, mode = 0, space = 1 }
 
 --- Floats to re-assert after every ProcessEvent, as offset -> value.
 ---
@@ -182,6 +189,12 @@ local function PushPose()
     file:write(string.format(
         "pose=0x%X pitch=%.2f yaw=%.2f roll=%.2f mode=%d space=%d\n",
         address + offset, Pose.pitch, Pose.yaw, Pose.roll, Pose.mode, Pose.space))
+    -- Written only when asked for, so the native parser's default of
+    -- BMM_Ignore stands and no existing caller silently gains a translation.
+    if Push.mode ~= 0 then
+        file:write(string.format("push=%.3f %.3f %.3f mode=%d space=%d\n",
+            Push.x, Push.y, Push.z, Push.mode, Push.space))
+    end
     for off, entry in pairs(Holds) do
         file:write(string.format("hold=0x%X %.4f %d\n", off, entry.value,
             entry.width or 4))
@@ -225,6 +238,7 @@ function Commands.help()
     Say("status | bones <sub> | where <bone> | nodes [minweight] | get <prop>")
     Say("reroot <bone> | surface <bone> [dx dy dz] | idleswap <path> | idleunswap | jiggle <match> <stiff> <damp> | springs | physics | colliders | bind <spherical|capsule> <i> <bone> <radius> | unbind")
     Say("pick <NodeName> | bone <BoneName> | pose <p> <y> <r> [mode] [space]")
+    Say("push <x> <y> <z> [mode] [space] | modbones | modbone <0-6> <bone> [dx dy dz]")
     Say("alpha <v> | hold <name|0xOFF> <v> | holds | clear | exec <cmd>")
     Say("swap <animPath> | unswap    upper-body custom slot content")
     Say("asset <objectPath>          read an AnimSequence's properties")
@@ -359,6 +373,46 @@ function Commands.pose(pitch, yaw, roll, mode, space)
     Say(string.format("pose pitch %.1f yaw %.1f roll %.1f mode %d space %d -> %s",
         Pose.pitch, Pose.yaw, Pose.roll, Pose.mode, Pose.space,
         ok and "handed to native" or tostring(err)))
+end
+
+--- push <x> <y> <z> [mode] [space]   displace the picked node's bone
+---
+--- THE DEFORMATION EXPERIMENT. Route 5, and the first one in the right phase of
+--- the frame by construction: FAnimNode_ModifyBone is a skeletal control, so it
+--- runs INSIDE evaluation, where the four earlier routes all lost their writes.
+---
+--- The whole test, once a node is picked and pointed at a breast bone:
+---
+---     pick AnimGraphNode_ModifyBone     free: alpha 0.00 on Bip001-R-Toe0
+---     bone Ab-R-Breast
+---     push 0 -3 0
+---
+--- AnimGraphNode_ModifyBone (+0x10408) and AnimGraphNode_ModifyBone_1
+--- (+0x10300) are both idle at alpha 0 on toe bones, and both sit immediately
+--- before AnimGraphNode_SpringBone_3 (+0x10598), which is her breast physics.
+--- A ModifyBone evaluating after that spring adds contact displacement on top
+--- of the jiggle instead of fighting it, which is what a squish is.
+---
+--- WHAT TO WATCH FOR, because "it wrote" is not "it worked": BoneToModify is an
+--- FBoneReference whose only UPROPERTY is BoneName, with the resolved index in
+--- transient bytes that InitializeBoneReferences fills at cache-bones time.
+--- Rerooting KawaiiPhysics failed exactly there -- the write took, persisted,
+--- and did nothing. If the breast does not visibly move, the index is cached
+--- and the name alone is not enough. LOOK AT HER; do not read this back.
+function Commands.push(x, y, z, mode, space)
+    Push.x = tonumber(x) or 0
+    Push.y = tonumber(y) or 0
+    Push.z = tonumber(z) or 0
+    -- Asking for a push at all implies wanting it applied, so default the mode
+    -- to additive rather than leaving it at the ignore it starts life with.
+    Push.mode  = tonumber(mode)  or (Push.mode ~= 0 and Push.mode or 2)
+    Push.space = tonumber(space) or Push.space
+    local ok, err = PushPose()
+    Say(string.format("push (%.2f, %.2f, %.2f) mode %d space %d on %s -> %s",
+        Push.x, Push.y, Push.z, Push.mode, Push.space, Picked,
+        ok and "handed to native" or tostring(err)))
+    Say("  look at her. A write that lands and does nothing looks identical")
+    Say("  to one that worked, if you only read the value back.")
 end
 
 function Commands.alpha(value)

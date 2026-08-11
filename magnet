@@ -210,10 +210,20 @@ def main():
     # 8 and wandered to 46.39 by iteration 10, and returning the last angles
     # threw the good answer away. Every non-converged solve this session
     # reported its worst step rather than its best.
-    best_ang, best_miss = ang[:], float('inf')
+    # WHERE THE ELBOW WANTS TO BE. Measured off reference footage, not chosen:
+    # see docs/anatomy.md, confirmed against reference/frames/pz_336s.jpg, where
+    # the upper arm hangs down the ribs with the elbow at about waist level.
+    # Midpoints of the observed ranges, flare -2..+6 and drop 18..25.
+    FLARE_WANT, DROP_WANT = 2.0, 21.5
+    best_ang, best_key, best_miss = ang[:], (2, float('inf')), float('inf')
+    settled = 0
 
-    for it in range(1, 11):   # 6 was not enough: the null-space solve was still
-                              # improving both hand and elbow when it ran out
+    for it in range(1, 15):   # 6 was not enough: the null-space solve was still
+                              # improving both hand and elbow when it ran out.
+                              # 10 was not enough either, once the loop stopped
+                              # breaking the instant position landed: tidying the
+                              # elbow needs iterations of its own, and they only
+                              # begin after the hand has arrived.
         # Static bones, read once per iteration rather than once per probe.
         static = read_bones(('Bip001-Spine', 'UpperArm', 'Breast', 'Bip001-Neck',
                              'Bip001-Head', 'Bip001-Pelvis', 'Bip001-R-Thigh',
@@ -231,21 +241,50 @@ def main():
         # Score both: a pose on target but 4 cm inside her chest is not a
         # solution. Penetration is penalised hard because it is always visible.
         score = dist + max(0.0, -gap) * 3.0
-        if score < best_miss:
-            best_ang, best_miss = ang[:], score
-        if dist < tol and gap > -0.3:
-            print('  converged'); break
+        drop, flare = -elbow[1], elbow[0]
+        elb = abs(flare - FLARE_WANT) + abs(drop - DROP_WANT)
+        # LEXICOGRAPHIC, not a weighted sum. A pose that puts the palm where it
+        # belongs always beats one that does not, and the elbow only breaks ties
+        # among poses that already landed. Adding the elbow into one number lets
+        # a tidy elbow buy its way past a miss, which is the same mistake as
+        # scoring it as a fourth residual -- that gave a hand correct to 0.85 cm
+        # with the elbow flared to +20.5, a chicken wing.
+        conv = dist < tol and gap > -0.3
+        key = (0, elb) if conv else (1, score)
+        if key < best_key:
+            best_ang, best_key, best_miss = ang[:], key, score
+        # DO NOT stop the moment position lands.
+        #
+        # This break is why the elbow rode high at drop 13.7 against a shipped
+        # 18-25. The null-space step only runs while the loop is still turning,
+        # and solves reach tolerance in a few iterations, so breaking on the
+        # first converged pass meant the elbow tidy-up never ran ONCE. The gate
+        # below was never the problem: at dist < 1 cm it is wide open.
+        #
+        # Position is converged and cannot be spent from here, so the remaining
+        # iterations are free. Give them to the elbow.
+        if conv:
+            settled += 1
+            if elb < 3.0 or settled > 4:
+                print('  converged'); break
+        else:
+            settled = 0
 
         # Jacobians, measured in game. Four probes; nothing here can disagree
         # with the engine about handedness or euler order.
-        Jp, Je, Jg = [], [], []  # d(hand)/d(angle), d(flare)/d(angle), d(gap)/d(angle)
+        # d(hand)/d(angle), d(flare)/d(angle), d(drop)/d(angle), d(gap)/d(angle).
+        # Jd is new: the elbow was only ever steered SIDEWAYS. Flare was held at
+        # +2 while drop was left to land wherever the position solve happened to
+        # leave it, which is exactly the axis that was wrong on screen.
+        Jp, Je, Jd, Jg = [], [], [], []
         for k in range(4):
             a2 = ang[:]; a2[k] += step
             p2 = probe(a2, static)
             if p2 is None:
                 print('  probe failed'); return 1
             Jp.append([(p2[0][i] - hand[i]) / step for i in range(3)])
-            Je.append((p2[1][0] - elbow[0]) / step)
+            Je.append((p2[1][0] - flare) / step)
+            Jd.append((-p2[1][1] - drop) / step)
             Jg.append((p2[3] - gap) / step)
 
         # FOUR angles, THREE position constraints: one degree of freedom is
@@ -290,15 +329,26 @@ def main():
         # traded away for the elbow.
         # The free swivel is spent on whichever matters more: getting the hand
         # OUT of her body if it is buried, otherwise tucking the elbow.
-        FLARE_WANT, GAIN, GATE = 2.0, 0.35, 6.0
+        GAIN, GATE = 0.35, 6.0
         pref = [0.0] * 4
         if dist < GATE and gap < 0.0:
             jj = sum(v * v for v in Jg) + 1e-6
             pref = [Jg[k] * (0.5 - gap) / jj * GAIN for k in range(4)]
         elif dist < GATE:
-            jj = sum(v * v for v in Je) + 1e-6
-            d_flare = FLARE_WANT - elbow[0]
-            pref = [Je[k] * d_flare / jj * GAIN for k in range(4)]
+            # TWO elbow objectives now, flare and drop, so this is a 2x4 system
+            # rather than a single row. Its minimum-norm solution is
+            # A^T (A A^T)^-1 b, which is the same least-squares step the
+            # one-row form used, generalised: with one row it reduces exactly to
+            # Je * d / (Je . Je). Solving them together matters because the two
+            # are coupled through the shoulder -- steering drop alone would drag
+            # flare straight back out of range.
+            A = [Je, Jd]
+            b = [FLARE_WANT - flare, DROP_WANT - drop]
+            AAt = [[sum(A[i][k] * A[j][k] for k in range(4)) + (1e-6 if i == j else 0.0)
+                    for j in range(2)] for i in range(2)]
+            u = solveN(AAt, b)
+            if u is not None:
+                pref = [sum(A[i][k] * u[i] for i in range(2)) * GAIN for k in range(4)]
             # Never let the preference outrun the task step it rides on.
             big = max(abs(v) for v in pref)
             if big > 8.0:
@@ -316,7 +366,8 @@ def main():
 
     # Re-apply and report the BEST pose found, not wherever the search ended up.
     if best_ang != ang:
-        print(f'  best was {best_miss:.2f} cm; re-applying it', flush=True)
+        print(f'  best was {best_miss:.2f} cm (elbow {best_key[1]:.1f}); re-applying it',
+              flush=True)
         probe(best_ang)
     ang = best_ang
     print(f'  final miss {best_miss:.2f} cm', flush=True)

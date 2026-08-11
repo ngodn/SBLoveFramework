@@ -64,14 +64,56 @@ returns to rest.
 | bone scale | UE does not export scale on deformation bones (`perTrack=2`) |
 | reroot KawaiiPhysics at the breast | writes and persists, does nothing: the chain is cached at init, and the breast chain is zero-length |
 
-What is left: **native**. `BlueprintUpdateAnimation` IS implemented on
-`CH_P_EVE_01_AnimBP_New` and is a real UFunction, so the DLL's existing
-ProcessEvent hook already sees it. Compute penetration each frame and write the
-breast bone transform directly into the component's transform array.
+### The BlueprintUpdateAnimation plan was wrong -- do not build it
 
-NOT via `SetBoneLocationByName` -- that lives on `UPoseableMeshComponent`, not
-the `USkeletalMeshComponent` Eve has, and would silently do nothing. Same trap
-as `GetBoneLocationByName` earlier.
+Previously recorded here as the way forward: hook `BlueprintUpdateAnimation`
+via the DLL's ProcessEvent detour and write the breast bone transform into the
+component's transform array. **That cannot work, for the same reason as the
+four routes above.**
+
+UE splits the animation frame into **Update** and **Evaluate**. Update runs the
+event graph so the graph has current variables; it explicitly does not touch
+bone transforms. Evaluate runs afterwards and PRODUCES the pose. So a transform
+written from a `BlueprintUpdateAnimation` hook is overwritten by evaluation on
+the very same frame, every frame. It would look exactly like the frozen-track
+test: writes land, persist, and change nothing on screen.
+
+(It was also going to be written via `SetBoneLocationByName`, which lives on
+`UPoseableMeshComponent`, not the `USkeletalMeshComponent` Eve has, and fails
+silently. Same trap as `GetBoneLocationByName`.)
+
+### Route 5: the ModifyBone node, which runs INSIDE evaluation
+
+`FAnimNode_ModifyBone` is a skeletal control, so it runs during Evaluate. That
+is the right phase by construction rather than by luck, and the DLL already
+drives one of these nodes successfully -- it is how the pose hold works, so the
+mechanism is proven on screen.
+
+`AnimGraphRuntime.hpp:345` gives the layout, and translation sits right beside
+the rotation the DLL already writes:
+
+```
+FBoneReference BoneToModify   0x00C8      TranslationMode   0x00FC
+FVector        Translation    0x00D8      RotationMode      0x00FD
+FRotator       Rotation       0x00E4  <-- already written by ApplyPose()
+FVector        Scale          0x00F0      TranslationSpace  0x00FF
+```
+
+Eve's AnimBP has exactly ONE: `AnimGraphNode_ModifyBone_6` at `0x0F70`
+(`CH_P_EVE_01_AnimBP_New.hpp:10`). One node means one bone, so retargeting it
+at the breast has to be tested against the bone-caching trap that killed the
+KawaiiPhysics reroot.
+
+The open question, and the cheap experiment to run first: `FBoneReference` is
+`0x10` bytes with `BoneName` its only UPROPERTY, so the resolved index lives in
+the transient tail (`BoneIndex`, and `bUseSkeletonIndex`). ModifyBone resolves
+name to index in `InitializeBoneReferences`, at cache-bones time. Writing the
+NAME alone will almost certainly do nothing. Writing name AND index together
+might. Test that before building anything on top of it.
+
+If the node cannot be retargeted, the fallback is a native hook on
+`FinalizeBoneTransform` / `RefreshBoneTransforms`, which run after evaluation
+and before the render -- hookable by RVA the same way ProcessEvent already is.
 
 ## Repositories
 

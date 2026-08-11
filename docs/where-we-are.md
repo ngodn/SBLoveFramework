@@ -22,8 +22,31 @@ session, and the screen was always right:
 | every waypoint 0.5-1.6 cm | solving the WRIST, palm carried 4 cm past her |
 | reach 3.7 cm (better!) | palm in her cleavage, not on her breast |
 | reach 5.3 cm (worse!) | correct, cupping from outside |
+| same angles: 2.80 then 45.23 | measuring her REST pose and calling it the result |
 
 No metric caught any of those. Looking did.
+
+## The handshake bug, because it invalidates old numbers
+
+`./pose` used to write a handoff file and `sleep 0.8`, on the reasoning that
+the DLL polls every 500 ms. When a patch had not landed in time, the next
+command measured her PREVIOUS pose and credited it to the angles just
+requested. `./magnet` is closed loop and believes what it reads, so a single
+stale sample poisons the finite-difference Jacobian and every iteration after.
+
+Caught by screenshot: a solve reported the palm 45.23 cm from a target that the
+SAME angles had measured at 2.80 cm minutes earlier, and she was standing in
+her rest pose. Rest measures drop 22.5, flare 2.0, hand ~45 cm from the breast.
+
+FIXED, natively: `ApplyAnimPatch` writes the stamp it applied to
+`SBLove_ack.txt`, and callers wait for their own stamp. `./pose` exits 2 loudly
+on a 5 s timeout instead of pretending to have worked, and `magnet`'s `sh()` no
+longer discards exit codes, which is what made a failed pose invisible.
+
+No sleep constant can fix this: the wait is on an EVENT, not a duration.
+
+**Treat any measurement recorded before this fix as suspect**, including the
+elbow's `drop 13.7` and the path solved into `reference/path-preack.txt`.
 
 ## Working
 

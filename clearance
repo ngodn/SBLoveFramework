@@ -20,7 +20,18 @@
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-{ ./sblove bones Bip001- 2>/dev/null; ./sblove bones Ab-R-Breast 2>/dev/null; } |
+# ONE console call, so every bone here describes the same instant. This used to
+# be two calls -- `bones Bip001-` then `bones Ab-R-Breast` -- and each round
+# trip lands on a different frame. While she stands still that is harmless;
+# while she moves, her torso and her hand are sampled metres apart and the
+# penetration arithmetic silently describes a pose that never existed.
+# `bones` also truncates at 60 matches, and she has far more bones than that.
+./sblove at \
+    Bip001-Pelvis Bip001-Spine Bip001-Spine1 Bip001-Spine2 Bip001-Neck \
+    Bip001-Head Bip001-R-Thigh Bip001-R-Calf Bip001-L-Thigh Bip001-L-Calf \
+    Bip001-R-Forearm Bip001-R-Hand \
+    Bip001-R-Finger1 Bip001-R-Finger2 Bip001-R-Finger3 Bip001-R-Finger4 \
+    Ab-R-Breast 2>/dev/null |
 python3 -c "
 import sys, re, math
 d = {}

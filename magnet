@@ -59,6 +59,10 @@ KNUCKLES = ('Bip001-R-Finger1', 'Bip001-R-Finger2',
 BONES = ('Bip001-Spine1', 'Bip001-Spine2', 'Bip001-R-UpperArm', 'Bip001-L-UpperArm',
          'Bip001-R-Forearm', 'Bip001-R-Hand', 'Ab-R-Breast') + KNUCKLES
 BODY_BONES = tuple({b for pair in BODY for b in pair[:2]})
+# Everything a solve looks at, in one list, so it can be read in one frame.
+# dict.fromkeys rather than a set: order is stable, which keeps the console
+# command and its output reproducible between runs.
+ALL_BONES = tuple(dict.fromkeys(BONES + BODY_BONES))
 
 
 class PoseFailed(Exception):
@@ -120,10 +124,29 @@ def anim_instance():
     return m.group(1) if m else None
 
 
-def read_bones(filters=('Bip001-Spine', 'UpperArm', 'Bip001-R-', 'Breast')):
-    out = ''
-    for f in filters:
-        out += sh(['./sblove', 'bones', f])
+def read_bones():
+    """Every bone this solve needs, ALL SAMPLED IN THE SAME FRAME.
+
+    This used to issue one console command per filter -- four for a probe, and
+    eight more per iteration for the bones that do not move -- and then compare
+    the results with each other. Each command is a separate round trip landing
+    on a different frame, so the comparison is only valid while she stands
+    still.
+
+    While she moves it is nonsense. Her torso read at one instant and her hand
+    at another are metres apart in world space, and nothing downstream can tell
+    that from a badly posed arm. Measured in Matrix_XI: about one iteration in
+    three came back with the palm 17 to 31 cm clear of EVERY collision capsule
+    and misses of 25 to 48 cm, on angles that were very nearly right. In the
+    Lobby, where she stands still, the identical code looked fine -- which is
+    why this survived so long.
+
+    The static/dynamic split that used to save round trips is gone with it. It
+    was the very thing that guaranteed her torso and her arm came from
+    different moments, and reading everything in one command is now both
+    correct AND fewer calls than the optimisation it replaces.
+    """
+    out = sh(['./sblove', 'at', *ALL_BONES])
     d = {}
     for line in out.splitlines():
         m = re.match(r'\s*\[\s*\d+\]\s+(\S+)\s+\(([^)]*)\)', line)
@@ -164,21 +187,22 @@ def frame(d):
     return rt, up, norm(cross(rt, up))
 
 
-def probe(angles, static=None):
+def probe(angles):
     """Apply angles, then report (hand, elbow, target) in her body frame.
 
-    `static` carries the bones that DO NOT move when tracks 48/49 change --
-    spine, left shoulder, breast. Re-reading them on every probe cost three
-    extra queries at 2 s each, which is most of the solve time. They are read
-    once per iteration instead.
+    Every bone comes from ONE console command, so the whole measurement
+    describes a single instant. An earlier version cached the bones that do not
+    move under tracks 48/49 -- spine, left shoulder, breast -- and re-read only
+    the arm, to save round trips. That is exactly what made her torso and her
+    arm come from different frames, and it only showed up once she was
+    somewhere she could move.
     """
     p, y, r, f = angles
     # check=True: an unconfirmed pose must stop the solve, not silently feed it
     # the previous pose's measurements.
     sh(['./pose', '48', f'{p:.3f}', f'{y:.3f}', f'{r:.3f}'], check=True)
     sh(['./pose', '49', '0', '0', f'{f:.3f}'], check=True)
-    d = dict(static) if static else {}
-    d.update(read_bones(('Bip001-R-',)) if static else read_bones())
+    d = read_bones()
     if not all(b in d for b in BONES):
         return None
     rt, up, fwd = frame(d)
@@ -241,7 +265,12 @@ def main():
 
     ang = seed[:]
     step = 6.0            # degrees, for the finite-difference Jacobian
-    tol = 1.0             # cm; the breast has volume, sub-cm is meaningless
+    # cm. The breast has volume, so sub-cm is meaningless -- and 1.0 was strict
+    # enough that solves finished just outside it (1.15, 1.34, 1.51) and never
+    # counted as converged at all. Since the elbow is only tidied AFTER position
+    # lands, that meant the elbow steering never ran once: the graze trace
+    # reported "best 1.15 cm" with the elbow still 25 cm out of range.
+    tol = 2.0
     # KEEP THE BEST POSE SEEN, not the last one tried. Gauss-Newton on a
     # measured Jacobian is not monotonic: one solve reached 1.12 cm at iteration
     # 8 and wandered to 46.39 by iteration 10, and returning the last angles
@@ -278,11 +307,7 @@ def main():
                 'a cutscene swaps the anim instance, and every measurement '
                 'after it describes a different character.')
 
-        # Static bones, read once per iteration rather than once per probe.
-        static = read_bones(('Bip001-Spine', 'UpperArm', 'Breast', 'Bip001-Neck',
-                             'Bip001-Head', 'Bip001-Pelvis', 'Bip001-R-Thigh',
-                             'Bip001-R-Calf'))
-        base = probe(ang, static)
+        base = probe(ang)
         if base is None:
             print('could not read bones; is the game running?'); return 1
         hand, elbow, brs, gap = base
@@ -335,7 +360,7 @@ def main():
         Jp, Je, Jd, Jg = [], [], [], []
         for k in range(4):
             a2 = ang[:]; a2[k] += step
-            p2 = probe(a2, static)
+            p2 = probe(a2)
             if p2 is None:
                 print('  probe failed'); return 1
             Jp.append([(p2[0][i] - hand[i]) / step for i in range(3)])
@@ -436,8 +461,12 @@ def main():
 
     # Re-apply and report the BEST pose found, not wherever the search ended up.
     if best_ang != ang:
-        print(f'  best was {best_miss:.2f} cm (elbow {best_key[1]:.1f}); re-applying it',
-              flush=True)
+        # best_key[1] is the elbow error only when the pose converged; otherwise
+        # it is the position score. Printing it as "elbow" either way claimed an
+        # elbow of 1.1 on a pose whose elbow was 25 cm out.
+        tag = (f'elbow {best_key[1]:.1f}' if best_key[0] == 0
+               else 'position never converged, elbow untouched')
+        print(f'  best was {best_miss:.2f} cm ({tag}); re-applying it', flush=True)
         probe(best_ang)
     ang = best_ang
     print(f'  final miss {best_miss:.2f} cm', flush=True)

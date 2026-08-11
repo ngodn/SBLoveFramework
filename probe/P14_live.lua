@@ -300,6 +300,41 @@ function Commands.bones(filter)
     if shown == 0 then Say("  nothing matched") end
 end
 
+--- at <bone> [bone ...]   several bones, ALL SAMPLED IN THE SAME FRAME
+---
+--- WHY THIS EXISTS, and it is a correctness fix rather than a convenience:
+---
+--- `bones <filter>` reads everything it matches inside one command, so those
+--- positions are consistent with each other. But a caller needing bones from
+--- several different filters had to issue several commands, and each one is a
+--- separate round trip that lands on a DIFFERENT FRAME.
+---
+--- ./magnet was doing exactly that -- up to eight calls for her torso and one
+--- more for the arm -- and then computing distances between them. While she
+--- stands still that is harmless. While she MOVES it is nonsense: her torso
+--- sampled at one moment and her hand at another are metres apart in world
+--- space, and the arithmetic cannot tell that from a badly posed arm.
+---
+--- Measured, from a solve in Matrix_XI: roughly one iteration in three came
+--- back with the palm 17 to 31 cm clear of EVERY collision capsule, and misses
+--- of 25 to 48 cm on angles that were nearly correct. Those were not bad poses,
+--- they were bones from different instants compared against each other. In the
+--- Lobby, where she stands still, the same code looked fine.
+---
+--- The truncation in `bones` is also why this takes a list rather than a wider
+--- filter: it stops at 60 matches, and she has far more bones than that.
+function Commands.at(...)
+    local mesh = Mesh()
+    if not IsLive(mesh) then Say("no mesh") return end
+    local names = { ... }
+    if #names == 0 then Say("usage: at <bone> [bone ...]") return end
+    for i, name in ipairs(names) do
+        local x, y, z = Where(name)
+        Say(string.format("  [%3d] %-28s %s", i - 1, name,
+            x and string.format("(%.1f, %.1f, %.1f)", x, y, z) or "unreadable"))
+    end
+end
+
 function Commands.where(bone)
     if not bone then Say("usage: where <bone>") return end
     local x, y, z = Where(bone)

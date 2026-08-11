@@ -77,6 +77,12 @@ track 49 (elbow)     roll 135
   -> hand right +14.4  up -3.1  fwd +12.6    drop 23.0   flare 3.7
 ```
 
+**That block is kept only as a record of a wrong answer.** Elbow roll `+135`
+bends her elbow BACKWARDS -- the shipped animations author it around `-118`, and
+every pose built before the `QuatToEuler` roll-sign fix had this inverted. It
+also solves the WRIST, which carries the palm about 4 cm past her. Do not seed
+from it. Live solutions live in `reference/path.txt`.
+
 ## Hand orientation is a separate problem
 
 Nothing about wrist position constrains which way the palm faces, and an

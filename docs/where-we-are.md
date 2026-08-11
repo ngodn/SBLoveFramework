@@ -73,11 +73,11 @@ NOT via `SetBoneLocationByName` -- that lives on `UPoseableMeshComponent`, not
 the `USkeletalMeshComponent` Eve has, and would silently do nothing. Same trap
 as `GetBoneLocationByName` earlier.
 
-## Not in git
+## Repositories
 
-`tools/SBAnimTool` is in NO repository. Every decoder finding lives there:
-all key formats, `--eulertest` (which caught the roll-sign bug), `--bodies`,
-`--emitanimtrans`, `--track`. It should be initialised and pushed.
+- `SBLoveFramework` -- https://github.com/ngodn/SBLoveFramework
+- `tools/SBAnimTool` -- https://github.com/ngodn/SBAnimTool (separate repo, it
+  is a general UE 4.26 tool and not specific to this framework)
 
 `assets/` (95 MB of extracted game data) and `reference/frames|sheets` (frames
 from commercial releases) are gitignored on purpose -- not ours to redistribute.

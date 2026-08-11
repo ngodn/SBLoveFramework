@@ -537,6 +537,130 @@ function Commands.reroot(bone)
     Say("  KawaiiPhysics is a volatile node; if this reverts it needs re-asserting")
 end
 
+--- modbones                        survey every ModifyBone node
+--- modbone <n> <bone> [dx dy dz]   retarget node n and push the bone
+---
+--- ROUTE 5 FOR DEFORMATION, and the first one that is in the right phase of the
+--- frame by construction rather than by luck.
+---
+--- The four routes tried before all failed for the same underlying reason: they
+--- wrote bone transforms somewhere that animation EVALUATION later overwrote.
+--- UE splits the frame into Update and Evaluate; Update runs the event graph and
+--- explicitly does not touch bone transforms, Evaluate produces the pose. So a
+--- write from a BlueprintUpdateAnimation hook loses every frame, which on screen
+--- is indistinguishable from the write not landing at all.
+---
+--- FAnimNode_ModifyBone is a skeletal control, so it runs INSIDE Evaluate. The
+--- native DLL already drives one of these successfully -- it is how the pose
+--- hold works -- so the mechanism is proven on screen, and Translation (0x00D8)
+--- sits right beside the Rotation (0x00E4) the DLL already writes.
+---
+--- Eve has SEVEN of them. That matters: SpringBone_3 is her breast physics, and
+--- ModifyBone_1 and ModifyBone both sit next to it in the layout. A ModifyBone
+--- that evaluates AFTER the spring can add contact displacement on top of the
+--- jiggle instead of fighting it, which is exactly what a squish is.
+---
+--- WHAT THIS IS TESTING, and why a survey comes before any writing: a node in
+--- use by the game cannot be borrowed without breaking whatever it does, and a
+--- node at Alpha 0 targeting nothing is free. The survey says which is which.
+---
+--- THE TRAP THIS IS PROBING FOR: BoneToModify is an FBoneReference, whose only
+--- UPROPERTY is BoneName -- the resolved index lives in transient bytes that
+--- InitializeBoneReferences fills at cache-bones time. Rerooting KawaiiPhysics
+--- failed exactly here: the write took, persisted, and did nothing, because the
+--- chain was already cached. So expect writing the NAME alone to do nothing,
+--- and treat "written" in the output as meaning the property changed, NOT that
+--- the engine noticed.
+local MODIFY_NODES = {
+    "AnimGraphNode_ModifyBone",   "AnimGraphNode_ModifyBone_1",
+    "AnimGraphNode_ModifyBone_2", "AnimGraphNode_ModifyBone_3",
+    "AnimGraphNode_ModifyBone_4", "AnimGraphNode_ModifyBone_5",
+    "AnimGraphNode_ModifyBone_6",
+}
+
+local MODE  = { [0] = "ignore", [1] = "replace", [2] = "additive" }
+local SPACE = { [0] = "world", [1] = "component", [2] = "parent", [3] = "bone" }
+
+local function vec(v)
+    if v == nil then return "?" end
+    return string.format("(%.2f, %.2f, %.2f)",
+        Number(Try(function() return v.X end), 0),
+        Number(Try(function() return v.Y end), 0),
+        Number(Try(function() return v.Z end), 0))
+end
+
+local function label(tbl, v)
+    local n = Number(v, -1)
+    return tbl[n] or ("?" .. tostring(v))
+end
+
+function Commands.modbones()
+    local instance = Instance()
+    if not IsLive(instance) then Say("no anim instance") return end
+    Say("  node                        bone                  alpha  t-mode     translation")
+    for i, name in ipairs(MODIFY_NODES) do
+        local node = Try(function() return instance[name] end)
+        if node == nil then
+            Say(string.format("  [%d] %-24s MISSING", i - 1, name))
+        else
+            Say(string.format("  [%d] %-24s %-20s %5.2f  %-9s %s  %s/%s",
+                i - 1, name:gsub("AnimGraphNode_", ""),
+                tostring(Try(function() return node.BoneToModify.BoneName:ToString() end)),
+                Number(Try(function() return node.Alpha end), -1),
+                label(MODE, Try(function() return node.TranslationMode end)),
+                vec(Try(function() return node.Translation end)),
+                label(SPACE, Try(function() return node.TranslationSpace end)),
+                label(MODE, Try(function() return node.RotationMode end))))
+        end
+    end
+    Say("  -> a node at alpha 0 targeting an unrelated bone is the one to borrow")
+end
+
+function Commands.modbone(which, bone, dx, dy, dz)
+    local instance = Instance()
+    if not IsLive(instance) then Say("no anim instance") return end
+    local name = MODIFY_NODES[(tonumber(which) or 0) + 1]
+    if not name then Say("usage: modbone <0-6> <bone> [dx dy dz]") return end
+    local node = Try(function() return instance[name] end)
+    if node == nil then Say("no such node: " .. name) return end
+
+    local before = Try(function() return node.BoneToModify.BoneName:ToString() end)
+    if not bone then
+        Say(string.format("  %s targets %s", name, tostring(before)))
+        return
+    end
+
+    -- Restore on unload. Borrowing a node the game is using would otherwise
+    -- leave her broken until a restart.
+    local originalAlpha = Number(Try(function() return node.Alpha end), 0)
+    Undo[#Undo + 1] = function()
+        local i = Instance()
+        local n = IsLive(i) and Try(function() return i[name] end)
+        if n then
+            pcall(function()
+                n.BoneToModify.BoneName = FName(before)
+                n.Alpha = originalAlpha
+                n.TranslationMode = 0
+            end)
+        end
+    end
+
+    local x, y, z = tonumber(dx) or 0.0, tonumber(dy) or 0.0, tonumber(dz) or 0.0
+    local ok = pcall(function()
+        node.BoneToModify.BoneName = FName(bone)
+        node.Translation = { X = x, Y = y, Z = z }
+        node.TranslationMode  = 2      -- BMM_Additive: displace, do not teleport
+        node.TranslationSpace = 1      -- BCS_ComponentSpace
+        node.Alpha = 1.0
+    end)
+    local after = Try(function() return node.BoneToModify.BoneName:ToString() end)
+    Say(string.format("  %s: %s -> %s  translate (%.2f, %.2f, %.2f)  %s",
+        name, tostring(before), tostring(bone), x, y, z,
+        (ok and after == bone) and "written" or "WRITE DID NOT TAKE"))
+    Say("  -> WRITTEN ONLY MEANS THE PROPERTY CHANGED. Look at her: if the bone")
+    Say("     does not move, the index is cached and the name alone is not enough.")
+end
+
 --- surface <bone> [dx] [dy] [dz]   nearest point on HER BODY, from a probe point
 ---
 --- WHY THIS EXISTS: a contact offset like "breast bone + (6,-2,9)" is

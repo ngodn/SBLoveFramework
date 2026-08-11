@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 # Hand position relative to the chest, in the body's own axes.
 # World coordinates are meaningless here because she can face any direction.
+#
+# FREEZE TIME FIRST:  ./sblove exec "slomo 0.01"
+#
+# This reads five bones with five separate calls, about a second apart. While
+# the animation plays, the spine and clavicles move between reads, so the body
+# frame is assembled from bones sampled at different moments and the result
+# swings wildly: 47.5, 42.1, 31.0, 5.4 on four consecutive runs of an unchanged
+# pose. Frozen, the same pose reads 6.4, 6.4, 6.4.
+#
+# An early sweep was run without freezing, and its apparent convergence was
+# partly luck.
 cd "$(dirname "${BASH_SOURCE[0]}")"
 for b in Bip001-Spine1 Bip001-Spine2 Bip001-R-Clavicle Bip001-L-Clavicle Bip001-R-Hand; do
     printf "%s " "$b"; ./sblove where $b 2>/dev/null | sed 's/.*(//;s/)//'

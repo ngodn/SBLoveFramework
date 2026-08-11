@@ -271,6 +271,41 @@ namespace
                 pose.roll = roll;
                 pose.rotation_mode = static_cast<uint8_t>(mode);
                 pose.rotation_space = static_cast<uint8_t>(space);
+
+                /* An OPTIONAL translation on the same node, for contact
+                 * deformation. Parsed separately rather than as more fields on
+                 * the pose= line so that every existing caller keeps working
+                 * unchanged: no push= means tmode stays BMM_Ignore and the
+                 * detour skips the translation writes entirely.
+                 *
+                 * Space defaults to BCS_ComponentSpace (1), not the rotation's
+                 * BCS_BoneSpace (3). A push into flesh is a direction on her
+                 * body, and bone space would rotate it with the bone -- which
+                 * for a breast bone driven by a spring node means the push
+                 * direction would wobble with the jiggle it is supposed to be
+                 * deforming. */
+                const char* push = strstr(buffer, "push=");
+                if (push)
+                {
+                    float tx = 0.0f, ty = 0.0f, tz = 0.0f;
+                    unsigned tmode = 2, tspace = 1;   /* additive, component */
+                    if (sscanf_s(push, "push=%f %f %f mode=%u space=%u",
+                                 &tx, &ty, &tz, &tmode, &tspace) >= 3)
+                    {
+                        pose.tx = tx;
+                        pose.ty = ty;
+                        pose.tz = tz;
+                        pose.translation_mode  = static_cast<uint8_t>(tmode);
+                        pose.translation_space = static_cast<uint8_t>(tspace);
+                        Log("  push (%.2f, %.2f, %.2f) mode=%u space=%u",
+                            tx, ty, tz, tmode, tspace);
+                    }
+                    else
+                    {
+                        Log("push line present but malformed, ignoring it");
+                    }
+                }
+
                 Hooks::HoldPose(pose, Log);
             }
             else

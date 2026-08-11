@@ -133,9 +133,16 @@ namespace
     /* Field offsets inside FAnimNode_ModifyBone (AnimGraphRuntime.hpp:345),
      * where Alpha comes from its base FAnimNode_SkeletalControlBase. */
     constexpr size_t kModifyBoneAlpha         = 0x2C;
+    constexpr size_t kModifyBoneTranslation   = 0xD8;
     constexpr size_t kModifyBoneRotation      = 0xE4;
     constexpr size_t kModifyBoneRotationMode  = 0xFD;
     constexpr size_t kModifyBoneRotationSpace = 0x100;
+    /* Translation's mode and space bracket the rotation's rather than sitting
+     * beside them: TranslationMode 0xFC, RotationMode 0xFD, ScaleMode 0xFE,
+     * then TranslationSpace 0xFF, RotationSpace 0x100. Six single bytes in a
+     * row, so writing the wrong one silently changes a neighbour. */
+    constexpr size_t kModifyBoneTranslationMode  = 0xFC;
+    constexpr size_t kModifyBoneTranslationSpace = 0xFF;
 
     Hooks::Pose g_pose{};
     volatile LONG g_pose_writes = 0;
@@ -166,6 +173,25 @@ namespace
             g_pose.rotation_mode;
         *reinterpret_cast<uint8_t*>(node + kModifyBoneRotationSpace) =
             g_pose.rotation_space;
+
+        /* Translation, held for the same reason and in the same place. Skipped
+         * entirely at BMM_Ignore so this cannot disturb a rotation-only pose:
+         * the mode byte sits directly against RotationMode, and writing it
+         * unconditionally would mean every existing caller silently gained a
+         * translation of (0,0,0) in a mode they never asked for. */
+        if (g_pose.translation_mode != 0)
+        {
+            auto* translation =
+                reinterpret_cast<float*>(node + kModifyBoneTranslation);
+            translation[0] = g_pose.tx;
+            translation[1] = g_pose.ty;
+            translation[2] = g_pose.tz;
+
+            *reinterpret_cast<uint8_t*>(node + kModifyBoneTranslationMode) =
+                g_pose.translation_mode;
+            *reinterpret_cast<uint8_t*>(node + kModifyBoneTranslationSpace) =
+                g_pose.translation_space;
+        }
 
         InterlockedIncrement(&g_pose_writes);
     }

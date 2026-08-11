@@ -66,6 +66,35 @@ namespace Hooks
         uint8_t rotation_mode = 2;   /* BMM_Additive */
         uint8_t rotation_space = 3;  /* BCS_BoneSpace */
         float alpha = 1.0f;
+
+        /* ------------------------------------------------ contact deformation
+         *
+         * Translation is held for exactly the same reason as the rotation: it
+         * is an exposed pin, so the anim graph re-copies it every frame and a
+         * one-shot write reverts before it is evaluated.
+         *
+         * This is what a squish is made of. Four earlier routes to deformation
+         * all failed the same way -- they wrote bone transforms somewhere that
+         * animation EVALUATION later overwrote. A ModifyBone node is a skeletal
+         * control, so it runs INSIDE evaluation, which makes it the first route
+         * that is in the right phase of the frame by construction rather than
+         * by luck.
+         *
+         * Mode defaults to BMM_Ignore, so nothing changes for existing callers
+         * until a translation is explicitly asked for. Component space, because
+         * a push into flesh is a direction on her body, not in the world: she
+         * can turn around without the deformation swapping sides.
+         *
+         * SCOPE, deliberately: this displaces the bone by an amount the CALLER
+         * computes. It is not yet per-frame collision response driven from live
+         * hand position -- that needs the DLL to read bone transforms itself,
+         * and it is only worth building once scenes are live rather than baked.
+         * For a baked animation the penetration depth is already known per
+         * waypoint, because ./clearance computes it against her 36 collision
+         * bodies, so the amount can simply be baked alongside the pose. */
+        float tx = 0.0f, ty = 0.0f, tz = 0.0f;
+        uint8_t translation_mode = 0;   /* BMM_Ignore until asked */
+        uint8_t translation_space = 1;  /* BCS_ComponentSpace */
     };
 
     void HoldPose(const Pose& pose, LogFunc log);

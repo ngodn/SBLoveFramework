@@ -80,6 +80,10 @@ if [ "${1:-}" != "--emit" ]; then
         echo "  solving $name -> breast + ($lat, $upo, $fwo)"
         # shellcheck disable=SC2086
         out="$(./magnet "$lat" "$upo" "$fwo" $seed --quiet 2>&1)" || true
+        # Keep the trace. bake captures magnet's output to parse it, which also
+        # hides the per-iteration miss/gap/drop/flare -- the only place a solve
+        # going wrong is visible while it is still running.
+        printf '%s\n' "$out" > "reference/trace-$name.log"
         sol="$(grep '^SOLVED' <<<"$out" | tail -1)"
         if [ -z "$sol" ]; then
             echo "$out" | tail -3

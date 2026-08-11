@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Sweep the wrist (track 50) for a palm direction that reads as cupping.
+#
+# Sweeping roll ALONE never got below 60 degrees off: rolling the wrist spins
+# the palm through up / forward / back, but never swings it toward the midline,
+# because that needs the other two axes. So all three are searched.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+OUT="${1:?usage: ./palmsearch <outfile>}"
+: > "$OUT"
+for p in -60 0 60; do
+for y in -60 0 60; do
+for r in -90 -45 0 45 90; do
+    ./pose 50 "$p" "$y" "$r" >/dev/null 2>&1 || continue
+    deg="$(./palm 2>/dev/null | grep -oE 'palm is +[0-9.]+' | grep -oE '[0-9.]+')"
+    [ -n "$deg" ] && echo "$deg $p $y $r" >> "$OUT"
+done; done; done
+echo "  deg  pitch  yaw roll"
+sort -n "$OUT" | head -8

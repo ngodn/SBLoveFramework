@@ -37,6 +37,21 @@
       alpha <value>                 hold a different alpha on the node
       clear                         restore the node and drop the pose
       exec <console command>        run a game console command
+      reroot <bone>                 re-point the ONE KawaiiPhysics node at
+                                    another chain: the only collider we have
+      surface <bone> [dx dy dz]     nearest point on HER BODY's physics asset,
+                                    so contact follows the loaded mesh instead
+                                    of a hardcoded offset (CNS bodies differ)
+      idleswap <animPath>           swap ONLY the idle samples of the live
+                                    locomotion BlendSpace (keeps walk/run)
+      idleunswap                    put those samples back
+      jiggle <match> <stiff> <damp>  retune spring chains: the game's own
+                                    breast physics, and writes to it persist
+      springs                       every spring chain and its live values
+      physics                       which physics node drives which bone
+      colliders                     KawaiiPhysics collision volumes
+      bind <kind> <i> <bone> <r>    bind a volume to a bone: the squish
+      unbind                        put borrowed volumes back
 
     mode:  0 ignore, 1 replace, 2 additive        space: 0 world, 1 component,
                                                          2 parent, 3 bone
@@ -50,6 +65,7 @@
 
 local Actors   = require("actors")
 local Playback = require("playback")
+local Contact  = require("contact")
 
 local CmdFile  = "ue4ss/SBLove_cmd.txt"
 local OutFile  = "ue4ss/SBLove_out.txt"
@@ -174,7 +190,17 @@ local function PushPose()
     return true
 end
 
+--- Anything borrowed that must be given back on unload. A BlendSpace sample and
+--- a KawaiiPhysics collision volume are both SHARED asset state: one left
+--- pointing at the wrong animation or the wrong bone stays wrong for the rest
+--- of the session, exactly like the borrowed ModifyBone node below.
+local Undo = {}
+
 local function Restore()
+    for i = #Undo, 1, -1 do
+        pcall(Undo[i])
+        Undo[i] = nil
+    end
     if OriginalBone and OriginalBone ~= "" then
         local instance = Instance()
         if IsLive(instance) then
@@ -197,6 +223,7 @@ local Commands = {}
 
 function Commands.help()
     Say("status | bones <sub> | where <bone> | nodes [minweight] | get <prop>")
+    Say("reroot <bone> | surface <bone> [dx dy dz] | idleswap <path> | idleunswap | jiggle <match> <stiff> <damp> | springs | physics | colliders | bind <spherical|capsule> <i> <bone> <radius> | unbind")
     Say("pick <NodeName> | bone <BoneName> | pose <p> <y> <r> [mode] [space]")
     Say("alpha <v> | hold <name|0xOFF> <v> | holds | clear | exec <cmd>")
     Say("swap <animPath> | unswap    upper-body custom slot content")
@@ -459,6 +486,337 @@ function Commands.grope(side, up, forward)
     Say("Enable_R_Hand held, RightHitLoc held -> " ..
         (ok and "handed to native" or tostring(err)))
     Say("if the hand does not move, this rig is not the one that places hands")
+end
+
+--- reroot <bone>                  re-point the KawaiiPhysics node at another chain
+---
+--- THE IDEA: Eve has exactly ONE KawaiiPhysics node and it is the only thing in
+--- her graph that can collide. It roots on Ab-TL-HairB01, so it simulates her
+--- ponytail. Her breasts are on AnimGraphNode_SpringBone_3, and spring nodes
+--- have no collision fields at all.
+---
+--- KawaiiPhysics simulates every DESCENDANT of RootBone. So pointing it at
+--- Dm-R-Breast-Point puts the whole breast chain under a simulator that DOES
+--- collide, and a sphere bound to Bip001-R-Hand then deforms it. No new node,
+--- no physics engine of our own.
+---
+--- Cost: one node, one chain. Her hair loses its physics while this is set.
+--- `reroot Ab-TL-HairB01` puts it back, and unload does it automatically.
+---
+--- Rooting high (say Bip001-Spine2) would cover breasts AND hair, but every
+--- descendant includes both arms, and physics-driven arms would destroy the
+--- pose the magnet just solved. The breast chain alone is the useful target.
+local rerootOriginal = nil
+
+function Commands.reroot(bone)
+    local instance = Instance()
+    if not IsLive(instance) then Say("no anim instance") return end
+    local node = Try(function() return instance["AnimGraphNode_KawaiiPhysics"] end)
+    if node == nil then Say("no KawaiiPhysics node") return end
+
+    local current = Try(function() return node.RootBone.BoneName:ToString() end)
+    if not bone then
+        Say(string.format("  RootBone is %s   (usage: reroot <bone>)", tostring(current)))
+        return
+    end
+    if rerootOriginal == nil then
+        rerootOriginal = current
+        Undo[#Undo + 1] = function()
+            local i = Instance()
+            local n = IsLive(i) and Try(function() return i["AnimGraphNode_KawaiiPhysics"] end)
+            if n and rerootOriginal then
+                pcall(function() n.RootBone.BoneName = FName(rerootOriginal) end)
+            end
+        end
+    end
+
+    local ok = pcall(function() node.RootBone.BoneName = FName(bone) end)
+    local after = Try(function() return node.RootBone.BoneName:ToString() end)
+    Say(string.format("  RootBone %s -> %s   %s", tostring(current), tostring(bone),
+        (ok and after == bone) and "written" or "WRITE DID NOT TAKE"))
+    Say("  KawaiiPhysics is a volatile node; if this reverts it needs re-asserting")
+end
+
+--- surface <bone> [dx] [dy] [dz]   nearest point on HER BODY, from a probe point
+---
+--- WHY THIS EXISTS: a contact offset like "breast bone + (6,-2,9)" is
+--- calibrated to ONE body mesh. Outfit mods -- CNS suits especially -- often
+--- bundle their own body, with a different bust shape. A hardcoded offset then
+--- puts the hand inside her, or floating off her.
+---
+--- K2_GetClosestPointOnPhysicsAsset queries the physics asset of the mesh that
+--- is ACTUALLY LOADED, so the answer follows whatever body is equipped. It also
+--- returns the surface NORMAL, which is the direction to push flesh for a
+--- squish, and the owning bone, which says whether the hit is really the breast
+--- or a rib.
+---
+--- The probe point is a bone plus an offset in WORLD axes, defaulting to 25 cm
+--- in front of the bone so the query starts outside her and finds the front
+--- surface rather than something interior.
+---
+--- CAVEAT: a physics asset is capsules and spheres, not the render mesh, so
+--- this is the collision silhouette rather than the skin. It is still derived
+--- from the loaded asset instead of guessed, which is the point. If the asset
+--- has no body on the breast the returned bone will say so.
+function Commands.surface(bone, dx, dy, dz)
+    local mesh = Mesh()
+    if not IsLive(mesh) then Say("no mesh") return end
+    bone = bone or "Ab-R-Breast"
+
+    local bx, by, bz = Where(bone)
+    if not bx then Say("no such bone: " .. tostring(bone)) return end
+    local px = bx + (tonumber(dx) or 0.0)
+    local py = by + (tonumber(dy) or -25.0)     -- default: out in front of her
+    local pz = bz + (tonumber(dz) or 0.0)
+
+    Say(string.format("  probe   (%.1f, %.1f, %.1f)   %s + (%.1f, %.1f, %.1f)",
+        px, py, pz, bone, px - bx, py - by, pz - bz))
+
+    -- SELF-DIAGNOSING. UE4SS returns a UFunction's out-parameters as extra
+    -- return values, but the exact shape is not documented for this build and
+    -- nothing else in this codebase calls one. Guessing the arity costs a game
+    -- restart per guess, so capture EVERYTHING and describe it instead.
+    local function describe(v)
+        local t = type(v)
+        if t == "userdata" or t == "table" then
+            local x = Try(function() return v.X end)
+            if type(x) == "number" then
+                return string.format("vector(%.2f, %.2f, %.2f)", x,
+                    Number(Try(function() return v.Y end), 0),
+                    Number(Try(function() return v.Z end), 0))
+            end
+            local s = Try(function() return v:ToString() end)
+            if s then return "name/obj(" .. tostring(s) .. ")" end
+            return t
+        end
+        return t .. "(" .. tostring(v) .. ")"
+    end
+
+    -- UE4SS builds disagree on how a UFunction's out-parameters are passed:
+    -- some take only the inputs and return the rest, others want a placeholder
+    -- argument per out-param. Guessing costs a game restart each time, so every
+    -- convention is tried in ONE pass and the working one reports itself.
+    local pos = { X = px, Y = py, Z = pz }
+    local zero = { X = 0.0, Y = 0.0, Z = 0.0 }
+    local attempts = {
+        { "K2 inputs only",      function() return mesh:K2_GetClosestPointOnPhysicsAsset(pos) end },
+        { "K2 with out slots",   function() return mesh:K2_GetClosestPointOnPhysicsAsset(pos, zero, zero, FName(""), 0.0) end },
+        { "K2 out table",        function() return mesh:K2_GetClosestPointOnPhysicsAsset(pos, {}, {}, {}, {}) end },
+        { "Collision inputs",    function() return mesh:GetClosestPointOnCollision(pos, FName(bone)) end },
+        { "Collision out slot",  function() return mesh:GetClosestPointOnCollision(pos, zero, FName(bone)) end },
+    }
+    for _, a in ipairs(attempts) do
+        local fn, call = a[1], a[2]
+        local packed = table.pack(pcall(call))
+        if not packed[1] then
+            Say(string.format("  %-20s threw: %s", fn,
+                tostring(packed[2]):sub(1, 60)))
+        else
+            Say(string.format("  %s returned %d value(s):", fn, packed.n - 1))
+            for i = 2, packed.n do
+                Say(string.format("    [%d] %s", i - 1, describe(packed[i])))
+            end
+        end
+    end
+    Say("  -> a vector here is the surface point; the second is the normal.")
+end
+
+--- idleswap <animPath> [matchName]   replace only the IDLE samples of the live
+---                                   locomotion BlendSpace
+---
+--- WHY: Proto_Idle is what plays, and it has NO breast tracks -- 139 tracks,
+--- not one of them Ab-*-Breast -- so it cannot carry a contact deformation at
+--- all. Proto_Idle_Social has all eight (204-211) alongside the arm, and is
+--- already loaded, but nothing plays it.
+---
+--- The live blendspace is IdleRun_BS_Peaceful2D_Roll on
+--- SBAnimGraphNode_BlendSpacePlayer_2 at weight 1.00, and its samples 1, 14 and
+--- 15 are Proto_Idle while the rest are walk / run / sprint / roll.
+---
+--- Playback.SwapBlendSpace rewrites EVERY sample, which would make her run and
+--- sprint play the idle too. This touches only the samples whose current
+--- animation matches, so locomotion survives.
+---
+--- A BlendSpace is a SHARED asset: originals are recorded here and put back by
+--- `idleunswap`, and one left edited stays wrong until the level reloads.
+local idleSwapRecord = {}
+
+function Commands.idleswap(path, matchName)
+    local instance = Instance()
+    if not IsLive(instance) then Say("no anim instance") return end
+    if not path then
+        Say("usage: idleswap /Game/.../Proto_Idle_Social.Proto_Idle_Social [matchName]")
+        return
+    end
+    matchName = matchName or "Proto_Idle"
+
+    local live = Playback.FindLiveBlendSpaces(instance, 0.05)
+    if #live == 0 then Say("no live blend space") return end
+    local space = live[1].blendSpace
+    Say(string.format("  blend space: %s (weight %.2f)", tostring(live[1].name),
+        live[1].weight))
+
+    local anim = Try(function() return StaticFindObject(path) end)
+    if not IsLive(anim) and type(LoadAsset) == "function" then
+        anim = Try(function() return LoadAsset(path) end)
+    end
+    if not IsLive(anim) then Say("  could not load " .. path) return end
+
+    local samples = Try(function() return space.SampleData end)
+    local count = samples and Try(function() return samples:GetArrayNum() end)
+    if type(count) ~= "number" then Say("  no samples") return end
+
+    local swapped = 0
+    for i = 1, count do
+        local sample = Try(function() return samples[i] end)
+        local cur = sample and Try(function() return sample.Animation end)
+        local name = IsLive(cur) and Try(function() return cur:GetFullName() end) or ""
+        if name:find(matchName, 1, true) then
+            if #idleSwapRecord == 0 then
+                Undo[#Undo + 1] = function() Commands.idleunswap() end
+            end
+            idleSwapRecord[#idleSwapRecord + 1] = { space = space, index = i, anim = cur }
+            Try(function() sample.Animation = anim end)
+            swapped = swapped + 1
+        end
+    end
+    Say(string.format("  swapped %d of %d samples matching '%s'", swapped, count, matchName))
+    if swapped == 0 then Say("  nothing matched; run `live` to see sample names") end
+end
+
+--- idleunswap                      put the borrowed idle samples back
+function Commands.idleunswap()
+    local n = 0
+    for _, r in ipairs(idleSwapRecord) do
+        if IsLive(r.space) then
+            local samples = Try(function() return r.space.SampleData end)
+            local sample = samples and Try(function() return samples[r.index] end)
+            if sample ~= nil and IsLive(r.anim) then
+                Try(function() sample.Animation = r.anim end)
+                n = n + 1
+            end
+        end
+    end
+    idleSwapRecord = {}
+    Say(string.format("  restored %d idle sample(s)", n))
+end
+
+--- jiggle <match> <stiffness> <damping>   retune spring chains, live
+---
+--- This is the game's OWN breast physics. AnimGraphNode_SpringBone_3 drives
+--- Ab-R-Breast, and the chain lagging behind her torso IS the jiggle.
+---
+--- Spring nodes are the reliable half of the control surface: 26 of the 27 have
+--- no exposed pins, so writes to them PERSIST. KawaiiPhysics does not -- the
+--- graph copies it from anim-BP variables every tick and overwrites anything
+--- written.
+---
+--- Scales are relative to the shipped values, captured on first use and put
+--- back by `springs restore`, so the relative tuning between chains survives.
+---
+---   jiggle Breast 0.5 0.6      looser and less damped: more overshoot
+---   jiggle R 1.0 1.0           put the right side back
+---
+--- LOWER stiffness = looser and more sway. LOWER damping = acceleration shows
+--- more, so it overshoots further.
+function Commands.jiggle(match, stiffness, damping)
+    local instance = Instance()
+    if not IsLive(instance) then Say("no anim instance") return end
+    if not match then
+        Say("usage: jiggle <bone-substring|L|R> <stiffnessScale> <dampingScale>")
+        return
+    end
+    local Physics = require("physics")
+    local ok, n = Physics.ApplyToChains(instance, match, {
+        Stiffness = tonumber(stiffness) or 1.0,
+        Damping   = tonumber(damping)   or 1.0,
+    })
+    Say(ok and string.format("  scaled %s field(s) on chains matching '%s'",
+                             tostring(n), match)
+           or string.format("  failed: %s", tostring(n)))
+    if ok and n == 0 then
+        Say("  nothing matched -- chain bones are named like Ab-R-Breast")
+    end
+end
+
+--- springs                        every chain, its bone, and its live values
+function Commands.springs()
+    local instance = Instance()
+    if not IsLive(instance) then Say("no anim instance") return end
+    local Physics = require("physics")
+    Say(Physics.Describe(instance))
+end
+
+--- physics                        which node drives which bone
+---
+--- THE QUESTION THIS ANSWERS: can the breast be squished by collision at all?
+---
+--- Only FAnimNode_KawaiiPhysics carries SphericalLimits / CapsuleLimits /
+--- PlanarLimits. FAnimNode_SpringBone has no collision fields whatsoever --
+--- just the bone, a displacement clamp and velocity history. So a chain on a
+--- spring node CANNOT be pushed aside by a collider, no matter what is bound.
+---
+--- Eve has 27 spring chains and exactly ONE KawaiiPhysics node, and she has
+--- very large ponytails. If that one node roots on hair, contact deformation of
+--- the breast needs a different mechanism entirely.
+function Commands.physics()
+    local instance = Instance()
+    if not IsLive(instance) then Say("no anim instance") return end
+
+    local node = Try(function() return instance["AnimGraphNode_KawaiiPhysics"] end)
+    local root = node and Try(function() return node.RootBone.BoneName:ToString() end)
+    Say(string.format("  KawaiiPhysics root: %s   (the only node that can collide)",
+        tostring(root or "?")))
+
+    local Physics = require("physics")
+    for _, entry in ipairs(Physics.MapChains(instance) or {}) do
+        Say(string.format("  spring %-28s -> %s", entry.property, entry.bone))
+    end
+end
+
+--- colliders                      list the KawaiiPhysics collision volumes
+---
+--- The squish does not have to be animated. KawaiiPhysics already pushes its
+--- chain out of any collision volume, every frame, so binding a volume to the
+--- HAND makes the breast deform on contact for free. Displacing the breast bone
+--- by hand would fight the physics rather than use it.
+function Commands.colliders()
+    local inst = Instance()
+    if not IsLive(inst) then Say("no anim instance") return end
+    Say(Contact.Describe(inst))
+end
+
+--- bind <kind> <index> <bone> <radius> [ox] [oy] [oz]
+---
+--- Take over an EXISTING collision limit rather than growing the array: a
+--- resized TArray on a live anim node is a far bigger change than an edited
+--- entry, and the game already ships several volumes.
+---
+---   bind spherical 1 Bip001-R-Hand 7
+function Commands.bind(kind, index, bone, radius, ox, oy, oz)
+    local inst = Instance()
+    if not IsLive(inst) then Say("no anim instance") return end
+    if not (kind and index and bone and radius) then
+        Say("usage: bind <spherical|capsule> <index> <bone> <radius> [ox oy oz]")
+        return
+    end
+    local off = { X = tonumber(ox) or 0.0, Y = tonumber(oy) or 0.0, Z = tonumber(oz) or 0.0 }
+    local ok, err = Contact.BindToBone(inst, kind, tonumber(index), bone,
+                                       tonumber(radius), off)
+    Say(ok and string.format("  bound %s limit %s to %s, radius %s",
+                             kind, index, bone, radius)
+           or string.format("  bind failed: %s", tostring(err)))
+end
+
+--- unbind                          put every borrowed collision volume back
+---
+--- Same reason `clear` exists: a volume left bound to the wrong bone stays
+--- wrong for the rest of the session, and these are shared anim-node state.
+function Commands.unbind()
+    local inst = Instance()
+    if not IsLive(inst) then Say("no anim instance") return end
+    local n = Contact.Release(inst)
+    Say(string.format("  released %s collision volume(s)", tostring(n or 0)))
 end
 
 function Commands.holds()

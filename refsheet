@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Build a contact sheet from a reference video, so a whole runtime can be
+# scanned at once instead of guessing timestamps.
+#
+#   ./refsheet <video> <name> [step_seconds] [cols] [rows] [start] [duration]
+#
+# Blind sampling has a bad hit rate: at a 20 s step the frame actually extracted
+# often lands in a different shot than the cell that looked promising. The
+# workflow that works is two passes -- a coarse sheet over the whole runtime to
+# find the region, then a fine sheet (2 s step) over just that region, and only
+# then pull full-resolution frames.
+#
+# Sheets and frames go to reference/ inside the project, not to /tmp, because a
+# session scratchpad is wiped and this is meant to accumulate.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+VIDEO="${1:?usage: ./refsheet <video> <name> [step] [cols] [rows] [start] [dur]}"
+NAME="${2:?need a short name for the output}"
+STEP="${3:-20}"; COLS="${4:-10}"; ROWS="${5:-7}"
+START="${6:-0}"; DUR="${7:-}"
+
+mkdir -p reference/sheets reference/frames
+OUT="reference/sheets/${NAME}.jpg"
+SEEK=(-ss "$START"); [ -n "$DUR" ] && SEEK+=(-t "$DUR")
+
+ffmpeg -y -v error "${SEEK[@]}" -i "$VIDEO" \
+    -vf "fps=1/${STEP},scale=240:-1,tile=${COLS}x${ROWS}" -frames:v 1 "$OUT" || exit 1
+
+echo "$OUT"
+echo "  ${COLS}x${ROWS} cells, ${STEP}s apart, starting at ${START}s"
+echo "  cell (row r, col c) zero-indexed is t = $START + (r*$COLS + c) * $STEP seconds"
+echo "  pull one with:  ./refframe <video> <name> <seconds>"

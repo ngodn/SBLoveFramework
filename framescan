@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Apply authored arm poses from another animation, frame by frame, and measure
+# where the hand actually lands.
+#
+#   ./framescan <anim.uasset> <shoulderTrack> <elbowTrack> <wristTrack> <from> <to> <step>
+#
+# Deriving joint angles numerically kept producing poses that scored well and
+# looked anatomically impossible, because no distance metric can see a wrist
+# twisted 70 degrees about the forearm. An animator already solved every one of
+# those constraints. So the search space here is not "all rotations", it is
+# "poses that shipped in this game".
+#
+# Track indices differ per animation -- Proto_Idle puts the right arm at
+# 48/49/50, Proto_Idle_Social at 59/60/61, Idle_Selfie_R at 48/49/50 -- so they
+# must be mapped through the skeleton with --bones, never assumed.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+SRC="${1:?usage: ./framescan <anim.uasset> <sh> <el> <wr> <from> <to> <step>}"
+ST="$2"; ET="$3"; WT="$4"; FROM="$5"; TO="$6"; STEP="${7:-10}"
+
+ROOT=~/development/mods/stellar-blade
+M="$ROOT/research/StellarBlade_retail_dumped.usmap"
+T="$ROOT/tools/SBAnimTool"
+
+# Pull every key once rather than shelling out per frame.
+dump() { (cd "$T" && dotnet run --project . -- "$SRC" "$M" --dumprot "$1" 1 2>/dev/null) | tail -n +3; }
+SH="$(dump "$ST")"; EL="$(dump "$ET")"; WR="$(dump "$WT")"
+
+printf '%6s %8s %8s %8s %8s %8s\n' frame reach drop flare palmoff bend
+for (( f=FROM; f<=TO; f+=STEP )); do
+    s=($(awk -v k="$f" '$1==k {print $2, $3, $4}' <<<"$SH"))
+    e=($(awk -v k="$f" '$1==k {print $2, $3, $4}' <<<"$EL"))
+    w=($(awk -v k="$f" '$1==k {print $2, $3, $4}' <<<"$WR"))
+    [ "${#s[@]}" -eq 3 ] && [ "${#e[@]}" -eq 3 ] && [ "${#w[@]}" -eq 3 ] || continue
+
+    ./pose 48 "${s[0]}" "${s[1]}" "${s[2]}" >/dev/null 2>&1
+    ./pose 49 "${e[0]}" "${e[1]}" "${e[2]}" >/dev/null 2>&1
+    ./pose 50 "${w[0]}" "${w[1]}" "${w[2]}" >/dev/null 2>&1
+
+    m="$(./measure 2>/dev/null)"
+    p="$(./palm 2>/dev/null)"
+    reach="$(grep -oE 'reach +[0-9.]+' <<<"$m" | grep -oE '[0-9.]+')"
+    drop="$(grep -oE 'drop +[+-][0-9.]+' <<<"$m" | grep -oE '[+-][0-9.]+')"
+    flare="$(grep -oE 'flare +[+-][0-9.]+' <<<"$m" | grep -oE '[+-][0-9.]+')"
+    off="$(grep -oE 'palm is +[0-9.]+' <<<"$p" | grep -oE '[0-9.]+')"
+    bend="$(grep -oE 'bent +[0-9.]+' <<<"$p" | grep -oE '[0-9.]+')"
+    printf '%6s %8s %8s %8s %8s %8s\n' "$f" "${reach:--}" "${drop:--}" "${flare:--}" "${off:--}" "${bend:--}"
+done

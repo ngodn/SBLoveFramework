@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Local search around an AUTHORED arm pose, scoring anatomy as well as position.
+#
+#   ./refine <out>
+#
+# Searching all rotations from scratch produced poses that scored well and were
+# anatomically impossible, because a wrist can be twisted 70 degrees about the
+# forearm with nothing in a distance metric to notice. So the base here is a
+# pose that shipped in the game -- Proto_Idle_Social frame 313, where she brings
+# her hand up in front of her chest -- and the search only nudges it.
+#
+# That base measures palm 13.5 deg off a cupping direction with the wrist bent
+# 29.6 deg, both fine. What it needs is to come inboard and back: the hand sits
+# at right +22.5 / fwd +17.8 while the breast bone is at right +4.6 / fwd +4.5.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+OUT="${1:?usage: ./refine <outfile>}"
+: > "$OUT"
+
+# Authored base, Proto_Idle_Social frame 313, read with the corrected roll sign.
+WRIST="-20.52 176.68 -149.11"
+
+for pitch in -42 -12 18 48; do
+for yaw in 64 79; do
+for roll in -17 3 23; do
+for flex in -138 -118; do
+    ./pose 48 "$pitch" "$yaw" "$roll" >/dev/null 2>&1 || continue
+    ./pose 49 0 0 "$flex"             >/dev/null 2>&1 || continue
+    ./pose 50 $WRIST                  >/dev/null 2>&1 || continue
+    m="$(./measure 2>/dev/null)"; p="$(./palm 2>/dev/null)"
+    # The hand POSITION, not just its distance. `reach` is a scalar, so a hand
+    # 10 cm to the LEFT of the breast bone scores exactly like one 10 cm to the
+    # right -- which is almost certainly why the arm kept crossing her chest.
+    hand=($(grep -E '^  hand ' <<<"$m" | grep -oE '[+-][0-9.]+'))
+    brst=($(grep -E '^  breast' <<<"$m" | grep -oE '[+-][0-9.]+'))
+    drop="$( grep -oE 'drop +[+-][0-9.]+'   <<<"$m" | grep -oE '[+-][0-9.]+')"
+    flare="$(grep -oE 'flare +[+-][0-9.]+'  <<<"$m" | grep -oE '[+-][0-9.]+')"
+    off="$(  grep -oE 'palm is +[0-9.]+'    <<<"$p" | grep -oE '[0-9.]+')"
+    bend="$( grep -oE 'bent +[0-9.]+'       <<<"$p" | grep -oE '[0-9.]+')"
+    [ "${#hand[@]}" -eq 3 ] && [ "${#brst[@]}" -eq 3 ] && [ -n "$off" ] &&
+        echo "$pitch $yaw $roll $flex ${hand[*]} ${brst[*]} $drop $flare $off $bend" >> "$OUT"
+done; done; done; done
+
+python3 - "$OUT" <<'PY'
+import sys
+rows=[]
+for ln in open(sys.argv[1]):
+    f=ln.split()
+    if len(f)!=14: continue
+    p,y,r,fl = f[:4]
+    hx,hy,hz, bx,by,bz, drop,flare,off,bend = (float(x) for x in f[4:])
+    # Where the wrist belongs RELATIVE TO the breast bone: outboard of it, a
+    # little below, and forward. The bone is the root on the ribcage and the
+    # breast has volume, so the hand cupping it from the outside sits off to the
+    # side and in front, never on the bone itself.
+    want = (bx + 7.0, by - 5.0, bz + 5.5)
+    dist = sum((a-b)**2 for a,b in zip((hx,hy,hz), want))**0.5
+    cost = (dist
+            + max(0.0, 14.0-drop)      # elbow must hang below the shoulder
+            + max(0.0, flare-9.0)      # and stay tucked, not flared
+            + off/6.0                  # palm turned toward the midline
+            + max(0.0, bend-45.0)/2.0) # wrist inside its range
+    rows.append((cost,dist,drop,flare,off,bend,p,y,r,fl,(hx,hy,hz)))
+rows.sort()
+print(f'{"cost":>6}{"dist":>7}{"drop":>7}{"flare":>7}{"palm":>7}{"bend":>7}   pitch yaw roll flex    hand')
+for c,ds,d,fl_,o,b,p,y,r,f,h in rows[:8]:
+    print(f'{c:6.1f}{ds:7.1f}{d:7.1f}{fl_:7.1f}{o:7.1f}{b:7.1f}   {p:>5} {y:>3} {r:>4} {f:>5}   '
+          f'{h[0]:+5.1f}{h[1]:+6.1f}{h[2]:+6.1f}')
+PY

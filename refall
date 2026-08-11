@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Build a coarse contact sheet for every reference video under a directory.
+#
+#   ./refall /run/media/.../ummr
+#
+# Pass one of the two-pass workflow: this maps what is in each file so the
+# regions worth looking at can be picked, then ./refsheet with a small step over
+# just that region, then ./refframe for full resolution. Sampling straight to
+# frames has a bad hit rate -- the frame pulled often lands in a different shot
+# than the cell that looked promising.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+ROOT="${1:?usage: ./refall <directory of videos>}"
+STEP="${2:-15}"
+mkdir -p reference/sheets
+
+find "$ROOT" -type f \( -iname '*.mp4' -o -iname '*.wmv' -o -iname '*.avi' \
+     -o -iname '*.mkv' -o -iname '*.webm' \) -print0 |
+while IFS= read -r -d '' v; do
+    # Name the sheet after its parent directory and file, so the two PIZZA
+    # volumes and the numbered scene files do not collide.
+    name="$(basename "$(dirname "$v")" | tr -cd 'A-Za-z0-9_-')_$(basename "${v%.*}" | tr -cd 'A-Za-z0-9_-')"
+    out="reference/sheets/${name}.jpg"
+    [ -s "$out" ] && { echo "have  $name"; continue; }
+    dur="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$v" 2>/dev/null)"
+    [ -n "$dur" ] || { echo "skip  $name (unreadable)"; continue; }
+    # Enough cells to cover the runtime at STEP seconds, capped so the sheet
+    # stays legible.
+    cells=$(python3 -c "print(min(120, max(12, int($dur/$STEP))))")
+    cols=$(python3 -c "import math; print(min(12, max(4, int(math.ceil(math.sqrt($cells*1.6))))))")
+    rows=$(python3 -c "import math; print(int(math.ceil($cells/$cols)))")
+    step=$(python3 -c "print(max(1, $dur/($cols*$rows)))")
+    ffmpeg -y -v error -i "$v" -vf "fps=1/$step,scale=200:-1,tile=${cols}x${rows}" \
+        -frames:v 1 "$out" 2>/dev/null &&
+        echo "made  $name  ${cols}x${rows} @ ${step}s  (${dur%.*}s)" ||
+        echo "fail  $name"
+done

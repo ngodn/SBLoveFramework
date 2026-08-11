@@ -103,6 +103,39 @@ tissue and stays put. See the notes in `Scripts/physics.lua`.
 | `Scripts/json.lua` | 220 | decoder with line/column errors and surrogate pairs |
 | `Scripts/main.lua` | 227 | current demo harness |
 
+## Authoring animation live
+
+The game does not have to be restarted to change an animation. The compressed
+buffer on disk and the one loaded in memory are the same structure, so the same
+byte offsets apply to both: SBAnimTool works out the patch from the extracted
+asset, Lua supplies the address of the loaded object, and the native DLL copies
+the bytes in. One iteration is about six seconds.
+
+```bash
+./sblove <cmd>               # live console: bones, where, get, exec, animaddr, ...
+./pose  <track> <p> <y> <r>  # constant rotation on one track
+./reset [track ...]          # put tracks back to the shipped keys
+./measure                    # arm geometry in her body frame, scored
+./palm                       # which way the right palm faces
+./armprobe <6 angles>        # apply a shoulder+elbow pose, print the geometry
+./armsearch                  # grid search the arm, ranked by cost
+./palmsearch <out>           # grid search the wrist
+./refsheet <video> <name>    # contact sheet from reference footage
+./refframe <video> <name> <s...>
+```
+
+Tracks 48, 49 and 50 are her right shoulder, elbow and wrist. See
+[docs/anatomy.md](docs/anatomy.md) for what each rotation axis does and for the
+two ways this measurement was wrong before it was right.
+
+`./reset` exists because patching happens in memory: once a track is
+overwritten there is nothing left to undo from, and a sweep through extreme
+rotations leaves the arm visibly broken with no way back.
+
+`assets/` holds the extracted animation. It used to live in a session
+scratchpad, which meant a wiped `/tmp` would silently break every byte offset
+the tools compute.
+
 ## Install
 
 ```bash

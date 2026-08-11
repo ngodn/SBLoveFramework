@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Pull full-resolution frames from a reference video into reference/frames/.
+#
+#   ./refframe <video> <name> <seconds> [seconds ...]
+#
+# Use after ./refsheet has narrowed down where to look.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+VIDEO="${1:?usage: ./refframe <video> <name> <seconds> [...]}"; NAME="$2"; shift 2
+mkdir -p reference/frames
+for t in "$@"; do
+    out="reference/frames/${NAME}_${t}s.jpg"
+    ffmpeg -y -v error -ss "$t" -i "$VIDEO" -frames:v 1 "$out" && echo "$out"
+done

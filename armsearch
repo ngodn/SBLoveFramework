@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Grid-search the right-arm pose and rank by a cost that includes the elbow.
+#
+# FREEZE TIME FIRST:  ./sblove exec "slomo 0.01"
+#
+# The cost is NOT just hand-to-target distance. Scoring the endpoint alone is
+# what produced the chicken-wing pose: a wrist can reach the target with the
+# elbow above the shoulder, and an optimiser will happily find that. So the
+# cost also pays for the elbow hanging low and staying tucked.
+#
+# Target is Ab-R-Breast plus an offset, because the hand should not sit ON the
+# bone. The bone is the root on the ribcage; the reference has the hand coming
+# in from the outside and below with the palm turned toward the midline, so the
+# wrist belongs lateral to and under the bone, with the palm forward of it.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+OUT="${1:-/tmp/claude-1000/-home-eins0fx-development-mods-stellar-blade/65251bed-369b-4c6d-b391-1d8aac543dc9/scratchpad/armsearch.txt}"
+: > "$OUT"
+for pitch in 170 180 190; do
+for yaw in 75 85; do
+for flex in 135 145 155; do
+for roll in 0 -20; do
+    line="$(./armprobe "$pitch" "$yaw" "$roll" 0 0 "$flex" 2>/dev/null)" || continue
+    [ -n "$line" ] || continue
+    echo "$pitch $yaw $roll $flex $line" >> "$OUT"
+done; done; done; done
+python3 - "$OUT" <<'PY'
+import sys
+rows=[]
+for ln in open(sys.argv[1]):
+    f=ln.split()
+    if len(f)!=19: continue     # 4 params + 15 measured values
+    p,y,r,fl = f[:4]
+    v=[float(x) for x in f[4:]]
+    hd=v[6:9]; tg=v[9:12]; drop=v[13]; flare=v[14]
+    # wrist belongs lateral to / under / just forward of the breast bone
+    want=[tg[0]+9.0, tg[1]-6.0, tg[2]+4.0]
+    dist=sum((a-b)**2 for a,b in zip(hd,want))**0.5
+    cost=dist + max(0.0,14.0-drop) + max(0.0,flare-9.0)
+    rows.append((cost,dist,drop,flare,p,y,r,fl,hd))
+rows.sort()
+print(f'{"cost":>6} {"dist":>6} {"drop":>6} {"flare":>6}   pitch yaw roll flex   hand (r,u,f)')
+for c,d,dr,fla,p,y,r,fl,hd in rows[:10]:
+    print(f'{c:6.1f} {d:6.1f} {dr:6.1f} {fla:6.1f}   {p:>5} {y:>3} {r:>4} {fl:>4}   '
+          f'{hd[0]:+6.1f} {hd[1]:+6.1f} {hd[2]:+6.1f}')
+PY
